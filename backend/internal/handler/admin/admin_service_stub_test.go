@@ -18,6 +18,8 @@ type stubAdminService struct {
 	proxyCounts          []service.ProxyWithAccountCount
 	redeems              []service.RedeemCode
 	createdAccounts      []*service.CreateAccountInput
+	updatedAccountIDs    []int64
+	updatedAccounts      []*service.UpdateAccountInput
 	createdProxies       []*service.CreateProxyInput
 	updatedProxyIDs      []int64
 	updatedProxies       []*service.UpdateProxyInput
@@ -205,10 +207,58 @@ func (s *stubAdminService) CreateAccount(ctx context.Context, input *service.Cre
 }
 
 func (s *stubAdminService) UpdateAccount(ctx context.Context, id int64, input *service.UpdateAccountInput) (*service.Account, error) {
+	s.mu.Lock()
+	s.updatedAccountIDs = append(s.updatedAccountIDs, id)
+	s.updatedAccounts = append(s.updatedAccounts, input)
+	s.mu.Unlock()
 	if s.updateAccountErr != nil {
 		return nil, s.updateAccountErr
 	}
-	account := service.Account{ID: id, Name: input.Name, Status: service.StatusActive}
+	account := service.Account{ID: id, Status: service.StatusActive}
+	for i := range s.accounts {
+		if s.accounts[i].ID != id {
+			continue
+		}
+		account = s.accounts[i]
+		break
+	}
+	if input.Name != "" {
+		account.Name = input.Name
+	}
+	if input.Type != "" {
+		account.Type = input.Type
+	}
+	if input.Notes != nil {
+		account.Notes = input.Notes
+	}
+	if input.Credentials != nil {
+		account.Credentials = input.Credentials
+	}
+	if input.Extra != nil {
+		account.Extra = input.Extra
+	}
+	if input.ProxyID != nil {
+		if *input.ProxyID == 0 {
+			account.ProxyID = nil
+		} else {
+			proxyID := *input.ProxyID
+			account.ProxyID = &proxyID
+		}
+	}
+	if input.GroupIDs != nil {
+		account.GroupIDs = append([]int64(nil), (*input.GroupIDs)...)
+	}
+	if input.ExpiresAt != nil {
+		if *input.ExpiresAt > 0 {
+			expiresAt := time.Unix(*input.ExpiresAt, 0)
+			account.ExpiresAt = &expiresAt
+		} else {
+			account.ExpiresAt = nil
+		}
+	}
+	if input.AutoPauseOnExpired != nil {
+		account.AutoPauseOnExpired = *input.AutoPauseOnExpired
+	}
 	return &account, nil
 }
 

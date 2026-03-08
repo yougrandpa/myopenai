@@ -172,7 +172,6 @@ func TestExportDataWithoutProxies(t *testing.T) {
 	require.Nil(t, resp.Data.Accounts[0].ProxyKey)
 }
 
-
 func TestImportDataForwardsSelectedGroupIDs(t *testing.T) {
 	router, adminSvc := setupAccountDataRouter()
 
@@ -264,4 +263,69 @@ func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 	require.Len(t, adminSvc.createdProxies, 0)
 	require.Len(t, adminSvc.createdAccounts, 1)
 	require.True(t, adminSvc.createdAccounts[0].SkipDefaultGroupBind)
+}
+
+func TestImportDataUpdatesDuplicateAccountByIdentity(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+
+	adminSvc.accounts = []service.Account{
+		{
+			ID:          42,
+			Name:        "existing-openai",
+			Platform:    service.PlatformOpenAI,
+			Type:        service.AccountTypeOAuth,
+			Credentials: map[string]any{"access_token": "old-at", "refresh_token": "old-rt", "chatgpt_account_id": "acc-123", "keep": "yes"},
+			Extra:       map[string]any{"email": "old@example.com", "flag": "keep"},
+			GroupIDs:    []int64{9},
+			Status:      service.StatusActive,
+		},
+	}
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":        "import@example.com",
+					"platform":    service.PlatformOpenAI,
+					"type":        service.AccountTypeOAuth,
+					"credentials": map[string]any{"access_token": "new-at", "refresh_token": "new-rt", "chatgpt_account_id": "acc-123"},
+					"extra":       map[string]any{"email": "import@example.com"},
+					"concurrency": 10,
+					"priority":    1,
+				},
+			},
+		},
+		"skip_default_group_bind": true,
+		"group_ids":               []int64{2},
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdAccounts, 0)
+	require.Len(t, adminSvc.updatedAccounts, 1)
+	require.Equal(t, int64(42), adminSvc.updatedAccountIDs[0])
+	require.Equal(t, "new-at", adminSvc.updatedAccounts[0].Credentials["access_token"])
+	require.Equal(t, "new-rt", adminSvc.updatedAccounts[0].Credentials["refresh_token"])
+	require.Equal(t, "yes", adminSvc.updatedAccounts[0].Credentials["keep"])
+	require.Equal(t, "keep", adminSvc.updatedAccounts[0].Extra["flag"])
+	require.NotNil(t, adminSvc.updatedAccounts[0].GroupIDs)
+	require.Equal(t, []int64{9, 2}, *adminSvc.updatedAccounts[0].GroupIDs)
+
+	var resp struct {
+		Code int              `json:"code"`
+		Data DataImportResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	require.Equal(t, 0, resp.Data.AccountCreated)
+	require.Equal(t, 1, resp.Data.AccountUpdated)
+	require.Equal(t, 0, resp.Data.AccountFailed)
 }

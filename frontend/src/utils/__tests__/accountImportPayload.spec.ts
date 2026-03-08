@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeAdminAccountImportPayload } from '@/utils/accountImportPayload'
+import {
+  mergeNormalizedAdminAccountImports,
+  normalizeAdminAccountImportPayload
+} from '@/utils/accountImportPayload'
 
 describe('normalizeAdminAccountImportPayload', () => {
   it('passes through exported sub2api payload', () => {
@@ -103,5 +106,55 @@ describe('normalizeAdminAccountImportPayload', () => {
     expect(() => normalizeAdminAccountImportPayload(JSON.stringify({ hello: 'world' }))).toThrow(
       'UNSUPPORTED_ACCOUNT_IMPORT_FORMAT'
     )
+  })
+})
+
+describe('mergeNormalizedAdminAccountImports', () => {
+  it('merges multiple imports and de-duplicates proxies by proxy key', () => {
+    const exported = normalizeAdminAccountImportPayload(
+      JSON.stringify({
+        exported_at: '2026-03-08T00:00:00Z',
+        proxies: [
+          {
+            proxy_key: 'http|127.0.0.1|8080||',
+            name: 'proxy-1',
+            protocol: 'http',
+            host: '127.0.0.1',
+            port: 8080,
+            status: 'active'
+          }
+        ],
+        accounts: [
+          {
+            name: 'exported-account',
+            platform: 'openai',
+            type: 'oauth',
+            credentials: { access_token: 'at-export' },
+            concurrency: 10,
+            priority: 1,
+            proxy_key: 'http|127.0.0.1|8080||'
+          }
+        ]
+      })
+    )
+
+    const openAI = normalizeAdminAccountImportPayload(
+      JSON.stringify({
+        access_token: 'at-1',
+        refresh_token: 'rt-1',
+        email: 'merge@example.com'
+      })
+    )
+
+    const merged = mergeNormalizedAdminAccountImports([exported, openAI, exported])
+
+    expect(merged.accountCount).toBe(3)
+    expect(merged.proxyCount).toBe(1)
+    expect(merged.payload.proxies).toHaveLength(1)
+    expect(merged.payload.accounts.map((item) => item.name)).toEqual([
+      'exported-account',
+      'merge@example.com',
+      'exported-account'
+    ])
   })
 })

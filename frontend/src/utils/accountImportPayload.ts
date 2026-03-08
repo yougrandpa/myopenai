@@ -1,4 +1,4 @@
-import type { AdminDataPayload } from '@/types'
+import type { AdminDataPayload, AdminDataProxy } from '@/types'
 
 export type AccountImportFormat = 'sub2api-data' | 'openai-oauth'
 
@@ -315,6 +315,53 @@ function unwrapImportCandidate(value: unknown): unknown {
   }
 
   return value
+}
+
+function resolveProxyImportKey(proxy: AdminDataProxy): string {
+  if (typeof proxy.proxy_key === 'string' && proxy.proxy_key.trim()) {
+    return proxy.proxy_key.trim()
+  }
+  return [
+    proxy.protocol,
+    proxy.host,
+    String(proxy.port),
+    proxy.username ?? '',
+    proxy.password ?? ''
+  ].join('|')
+}
+
+export function mergeNormalizedAdminAccountImports(
+  imports: NormalizedAdminAccountImport[]
+): NormalizedAdminAccountImport {
+  if (imports.length === 0) {
+    throw new Error('EMPTY_ACCOUNT_IMPORTS')
+  }
+  if (imports.length === 1) {
+    return imports[0]
+  }
+
+  const proxies = new Map<string, AdminDataPayload['proxies'][number]>()
+  const accounts: AdminDataPayload['accounts'] = []
+
+  for (const item of imports) {
+    for (const proxy of item.payload.proxies) {
+      proxies.set(resolveProxyImportKey(proxy), proxy)
+    }
+    accounts.push(...item.payload.accounts)
+  }
+
+  return {
+    format: imports[0].format,
+    payload: {
+      type: 'sub2api-data',
+      version: 1,
+      exported_at: new Date().toISOString(),
+      proxies: [...proxies.values()],
+      accounts
+    },
+    accountCount: accounts.length,
+    proxyCount: proxies.size
+  }
 }
 
 export function normalizeAdminAccountImportPayload(rawText: string): NormalizedAdminAccountImport {

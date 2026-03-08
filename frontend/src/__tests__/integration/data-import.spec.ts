@@ -51,7 +51,7 @@ describe('ImportDataModal', () => {
     expect(showError).toHaveBeenCalledWith('admin.accounts.dataImportSelectFile')
   })
 
-  it('无效 JSON 时提示解析失败', async () => {
+  it('单个无效 JSON 时提示解析失败', async () => {
     const wrapper = mount(ImportDataModal, {
       props: { show: true },
       global: {
@@ -62,7 +62,7 @@ describe('ImportDataModal', () => {
       }
     })
 
-    const input = wrapper.find('input[type="file"]')
+    const input = wrapper.get('[data-testid="file-input"]')
     const file = new File(['invalid json'], 'data.json', { type: 'application/json' })
     Object.defineProperty(file, 'text', {
       value: () => Promise.resolve('invalid json')
@@ -78,12 +78,13 @@ describe('ImportDataModal', () => {
     expect(showError).toHaveBeenCalledWith('admin.accounts.dataImportParseFailed')
   })
 
-  it('识别 OpenAI 账号 JSON 并转换为批量导入 payload', async () => {
+  it('识别 OpenAI 账号 JSON 并转换为导入 payload', async () => {
     importData.mockResolvedValue({
       proxy_created: 0,
       proxy_reused: 0,
       proxy_failed: 0,
       account_created: 1,
+      account_updated: 0,
       account_failed: 0,
       errors: []
     })
@@ -113,7 +114,7 @@ describe('ImportDataModal', () => {
       }
     })
 
-    const input = wrapper.find('input[type="file"]')
+    const input = wrapper.get('[data-testid="file-input"]')
     const file = new File(['{}'], 'codex.json', { type: 'application/json' })
     Object.defineProperty(file, 'text', {
       value: () =>
@@ -168,4 +169,5 @@ describe('ImportDataModal', () => {
     })
     expect(showSuccess).toHaveBeenCalledWith('admin.accounts.dataImportSuccess')
   })
+
 })

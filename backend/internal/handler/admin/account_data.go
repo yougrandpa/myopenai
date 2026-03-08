@@ -65,6 +65,7 @@ type DataImportResult struct {
 	ProxyReused    int               `json:"proxy_reused"`
 	ProxyFailed    int               `json:"proxy_failed"`
 	AccountCreated int               `json:"account_created"`
+	AccountUpdated int               `json:"account_updated"`
 	AccountFailed  int               `json:"account_failed"`
 	Errors         []DataImportError `json:"errors,omitempty"`
 }
@@ -200,11 +201,24 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		return result, err
 	}
 
+	existingAccounts, err := h.listAccountsFiltered(ctx, "", "", "", "")
+	if err != nil {
+		return result, err
+	}
+
 	proxyKeyToID := make(map[string]int64, len(existingProxies))
 	for i := range existingProxies {
 		p := existingProxies[i]
 		key := buildProxyKey(p.Protocol, p.Host, p.Port, p.Username, p.Password)
 		proxyKeyToID[key] = p.ID
+	}
+
+	accountByID := make(map[int64]service.Account, len(existingAccounts))
+	accountIdentityIndex := make(map[string]int64, len(existingAccounts)*4)
+	for i := range existingAccounts {
+		account := existingAccounts[i]
+		accountByID[account.ID] = account
+		addAccountIdentityKeys(accountIdentityIndex, account)
 	}
 
 	for i := range dataPayload.Proxies {
@@ -293,6 +307,35 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			}
 		}
 
+		duplicateID, ambiguousMatch := findMatchingImportedAccount(accountIdentityIndex, item)
+		if duplicateID > 0 {
+			existing := accountByID[duplicateID]
+			updateInput := buildDuplicateAccountUpdateInput(existing, item, proxyID, req.GroupIDs)
+			if _, err := h.adminService.UpdateAccount(ctx, duplicateID, updateInput); err != nil {
+				result.AccountFailed++
+				result.Errors = append(result.Errors, DataImportError{
+					Kind:    "account",
+					Name:    item.Name,
+					Message: err.Error(),
+				})
+				continue
+			}
+			result.AccountUpdated++
+			updatedSnapshot := applyImportedDuplicateAccountUpdate(existing, item, proxyID, req.GroupIDs)
+			accountByID[duplicateID] = updatedSnapshot
+			addAccountIdentityKeys(accountIdentityIndex, updatedSnapshot)
+			continue
+		}
+		if ambiguousMatch {
+			result.AccountFailed++
+			result.Errors = append(result.Errors, DataImportError{
+				Kind:    "account",
+				Name:    item.Name,
+				Message: "multiple existing accounts matched this import; please clean up duplicates first",
+			})
+			continue
+		}
+
 		accountInput := &service.CreateAccountInput{
 			Name:                 item.Name,
 			Notes:                item.Notes,
@@ -310,7 +353,8 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			SkipDefaultGroupBind: skipDefaultGroupBind,
 		}
 
-		if _, err := h.adminService.CreateAccount(ctx, accountInput); err != nil {
+		created, err := h.adminService.CreateAccount(ctx, accountInput)
+		if err != nil {
 			result.AccountFailed++
 			result.Errors = append(result.Errors, DataImportError{
 				Kind:    "account",
@@ -320,6 +364,10 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			continue
 		}
 		result.AccountCreated++
+
+		createdSnapshot := buildImportedAccountSnapshot(created.ID, item, proxyID, req.GroupIDs)
+		accountByID[created.ID] = createdSnapshot
+		addAccountIdentityKeys(accountIdentityIndex, createdSnapshot)
 	}
 
 	return result, nil
@@ -413,6 +461,272 @@ func (h *AccountHandler) resolveExportProxies(ctx context.Context, accounts []se
 	}
 
 	return h.adminService.GetProxiesByIDs(ctx, ids)
+}
+
+func buildImportedAccountSnapshot(id int64, item DataAccount, proxyID *int64, groupIDs []int64) service.Account {
+	snapshot := service.Account{
+		ID:          id,
+		Name:        item.Name,
+		Notes:       item.Notes,
+		Platform:    item.Platform,
+		Type:        item.Type,
+		Credentials: cloneStringAnyMap(item.Credentials),
+		Extra:       cloneStringAnyMap(item.Extra),
+		ProxyID:     cloneInt64Ptr(proxyID),
+		Concurrency: item.Concurrency,
+		Priority:    item.Priority,
+		GroupIDs:    append([]int64(nil), groupIDs...),
+	}
+	if item.RateMultiplier != nil {
+		v := *item.RateMultiplier
+		snapshot.RateMultiplier = &v
+	}
+	if item.ExpiresAt != nil && *item.ExpiresAt > 0 {
+		expiresAt := time.Unix(*item.ExpiresAt, 0)
+		snapshot.ExpiresAt = &expiresAt
+	}
+	if item.AutoPauseOnExpired != nil {
+		snapshot.AutoPauseOnExpired = *item.AutoPauseOnExpired
+	}
+	return snapshot
+}
+
+func buildDuplicateAccountUpdateInput(existing service.Account, item DataAccount, proxyID *int64, selectedGroupIDs []int64) *service.UpdateAccountInput {
+	mergedCredentials := mergeStringAnyMap(existing.Credentials, item.Credentials)
+	mergedExtra := mergeStringAnyMap(existing.Extra, item.Extra)
+	input := &service.UpdateAccountInput{
+		Credentials: mergedCredentials,
+	}
+	if len(mergedExtra) > 0 {
+		input.Extra = mergedExtra
+	}
+	if item.Notes != nil {
+		input.Notes = item.Notes
+	}
+	if item.ExpiresAt != nil {
+		input.ExpiresAt = item.ExpiresAt
+	}
+	if item.AutoPauseOnExpired != nil {
+		input.AutoPauseOnExpired = item.AutoPauseOnExpired
+	}
+	if proxyUpdate := buildProxyIDUpdate(item, proxyID); proxyUpdate != nil {
+		input.ProxyID = proxyUpdate
+	}
+	if len(selectedGroupIDs) > 0 {
+		mergedGroups := mergeGroupIDs(existing.GroupIDs, selectedGroupIDs)
+		input.GroupIDs = &mergedGroups
+	}
+	return input
+}
+
+func applyImportedDuplicateAccountUpdate(existing service.Account, item DataAccount, proxyID *int64, selectedGroupIDs []int64) service.Account {
+	updated := existing
+	updated.Credentials = mergeStringAnyMap(existing.Credentials, item.Credentials)
+	updated.Extra = mergeStringAnyMap(existing.Extra, item.Extra)
+	if item.Notes != nil {
+		updated.Notes = item.Notes
+	}
+	if proxyUpdate := buildProxyIDUpdate(item, proxyID); proxyUpdate != nil {
+		if *proxyUpdate == 0 {
+			updated.ProxyID = nil
+		} else {
+			updated.ProxyID = cloneInt64Ptr(proxyUpdate)
+		}
+	}
+	if item.ExpiresAt != nil {
+		if *item.ExpiresAt <= 0 {
+			updated.ExpiresAt = nil
+		} else {
+			expiresAt := time.Unix(*item.ExpiresAt, 0)
+			updated.ExpiresAt = &expiresAt
+		}
+	}
+	if item.AutoPauseOnExpired != nil {
+		updated.AutoPauseOnExpired = *item.AutoPauseOnExpired
+	}
+	if len(selectedGroupIDs) > 0 {
+		updated.GroupIDs = mergeGroupIDs(existing.GroupIDs, selectedGroupIDs)
+	}
+	return updated
+}
+
+func buildProxyIDUpdate(item DataAccount, proxyID *int64) *int64 {
+	if item.ProxyKey == nil {
+		return nil
+	}
+	if strings.TrimSpace(*item.ProxyKey) == "" {
+		zero := int64(0)
+		return &zero
+	}
+	return cloneInt64Ptr(proxyID)
+}
+
+func mergeStringAnyMap(base map[string]any, patch map[string]any) map[string]any {
+	if len(base) == 0 && len(patch) == 0 {
+		return nil
+	}
+	merged := make(map[string]any, len(base)+len(patch))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range patch {
+		merged[k] = v
+	}
+	return merged
+}
+
+func cloneStringAnyMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(src))
+	for k, v := range src {
+		cloned[k] = v
+	}
+	return cloned
+}
+
+func cloneInt64Ptr(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	v := *value
+	return &v
+}
+
+func mergeGroupIDs(existing []int64, selected []int64) []int64 {
+	merged := make([]int64, 0, len(existing)+len(selected))
+	seen := make(map[int64]struct{}, len(existing)+len(selected))
+	for _, id := range existing {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		merged = append(merged, id)
+	}
+	for _, id := range selected {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		merged = append(merged, id)
+	}
+	return merged
+}
+
+func findMatchingImportedAccount(identityIndex map[string]int64, item DataAccount) (int64, bool) {
+	ambiguous := false
+	for _, key := range buildAccountIdentityKeys(item.Platform, item.Type, item.Name, item.Credentials, item.Extra) {
+		id, ok := identityIndex[key]
+		if !ok {
+			continue
+		}
+		if id > 0 {
+			return id, false
+		}
+		ambiguous = true
+	}
+	return 0, ambiguous
+}
+
+func addAccountIdentityKeys(identityIndex map[string]int64, account service.Account) {
+	for _, key := range buildAccountIdentityKeys(account.Platform, account.Type, account.Name, account.Credentials, account.Extra) {
+		if key == "" {
+			continue
+		}
+		if existingID, ok := identityIndex[key]; ok {
+			if existingID != account.ID {
+				identityIndex[key] = 0
+			}
+			continue
+		}
+		identityIndex[key] = account.ID
+	}
+}
+
+func buildAccountIdentityKeys(platform, accountType, name string, credentials, extra map[string]any) []string {
+	prefix := strings.ToLower(strings.TrimSpace(platform)) + "|" + strings.ToLower(strings.TrimSpace(accountType)) + "|"
+	keys := make([]string, 0, 12)
+	seen := make(map[string]struct{}, 12)
+	addKey := func(scope, key string, fold bool, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if fold {
+			value = strings.ToLower(value)
+		}
+		identityKey := prefix + scope + ":" + key + ":" + value
+		if _, ok := seen[identityKey]; ok {
+			return
+		}
+		seen[identityKey] = struct{}{}
+		keys = append(keys, identityKey)
+	}
+
+	addKey("credentials", "chatgpt_account_id", false, lookupAnyString(credentials, "chatgpt_account_id"))
+	addKey("credentials", "chatgpt_user_id", false, lookupAnyString(credentials, "chatgpt_user_id"))
+	addKey("extra", "crs_account_id", false, lookupAnyString(extra, "crs_account_id"))
+	addKey("credentials", "project_id", false, lookupAnyString(credentials, "project_id"))
+	addKey("credentials", "account_uuid", false, lookupAnyString(credentials, "account_uuid"))
+	addKey("credentials", "org_uuid", false, lookupAnyString(credentials, "org_uuid"))
+	addKey("credentials", "refresh_token", false, lookupAnyString(credentials, "refresh_token"))
+	addKey("credentials", "api_key", false, lookupAnyString(credentials, "api_key"))
+	addKey("credentials", "session_key", false, lookupAnyString(credentials, "session_key"))
+	addKey("credentials", "token", false, lookupAnyString(credentials, "token"))
+	addKey("credentials", "access_token", false, lookupAnyString(credentials, "access_token"))
+	addKey("extra", "email", true, lookupAnyString(extra, "email"))
+	addKey("account", "name", true, name)
+
+	return keys
+}
+
+func lookupAnyString(record map[string]any, key string) string {
+	if len(record) == 0 {
+		return ""
+	}
+	value, ok := record[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case fmt.Stringer:
+		return typed.String()
+	case float64:
+		return strconv.FormatInt(int64(typed), 10)
+	case float32:
+		return strconv.FormatInt(int64(typed), 10)
+	case int:
+		return strconv.Itoa(typed)
+	case int64:
+		return strconv.FormatInt(typed, 10)
+	case int32:
+		return strconv.FormatInt(int64(typed), 10)
+	case int16:
+		return strconv.FormatInt(int64(typed), 10)
+	case int8:
+		return strconv.FormatInt(int64(typed), 10)
+	case uint:
+		return strconv.FormatUint(uint64(typed), 10)
+	case uint64:
+		return strconv.FormatUint(typed, 10)
+	case uint32:
+		return strconv.FormatUint(uint64(typed), 10)
+	case uint16:
+		return strconv.FormatUint(uint64(typed), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(typed), 10)
+	default:
+		return ""
+	}
 }
 
 func parseAccountIDs(c *gin.Context) ([]int64, error) {

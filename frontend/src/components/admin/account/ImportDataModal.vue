@@ -28,31 +28,54 @@
           @dragleave.prevent="handleDragLeave"
           @drop.prevent="handleDrop"
         >
-          <div class="flex items-center justify-between gap-3">
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div class="min-w-0">
               <div class="truncate text-sm text-gray-700 dark:text-dark-200">
-                {{ fileName || t('admin.accounts.dataImportSelectFile') }}
+                {{ fileLabel || t('admin.accounts.dataImportSelectFile') }}
               </div>
               <div class="text-xs text-gray-500 dark:text-dark-400">
                 {{ t('admin.accounts.dataImportFileHint') }}
               </div>
             </div>
-            <button
-              type="button"
-              class="btn btn-secondary shrink-0"
-              :disabled="importing || parsing"
-              @click="openFilePicker"
-            >
-              {{ t('common.chooseFile') }}
-            </button>
+            <div class="flex shrink-0 gap-2">
+              <button
+                type="button"
+                class="btn btn-secondary"
+                :disabled="importing || parsing"
+                @click="openFilePicker"
+              >
+                {{ t('common.chooseFile') }}
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                :disabled="importing || parsing"
+                @click="openDirectoryPicker"
+              >
+                {{ t('admin.accounts.dataImportChooseFolder') }}
+              </button>
+            </div>
           </div>
         </div>
         <input
           ref="fileInput"
+          data-testid="file-input"
           type="file"
           class="hidden"
+          multiple
           accept="application/json,.json"
           @change="handleFileChange"
+        />
+        <input
+          ref="directoryInput"
+          data-testid="directory-input"
+          type="file"
+          class="hidden"
+          multiple
+          webkitdirectory
+          directory
+          accept="application/json,.json"
+          @change="handleDirectoryChange"
         />
       </div>
 
@@ -68,10 +91,23 @@
             {{
               t('admin.accounts.dataImportDetectedSummary', {
                 format: detectedFormatLabel,
+                file_count: validFileCount,
                 account_count: selectedImport.accountCount,
                 proxy_count: selectedImport.proxyCount
               })
             }}
+          </div>
+        </div>
+
+        <div
+          v-if="parseWarnings.length"
+          class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300"
+        >
+          <div class="font-medium">
+            {{ t('admin.accounts.dataImportSkippedFilesHint', { count: parseWarnings.length }) }}
+          </div>
+          <div class="mt-2 max-h-32 overflow-auto space-y-1 font-mono">
+            <div v-for="item in parseWarnings" :key="item">{{ item }}</div>
           </div>
         </div>
 
@@ -153,7 +189,9 @@ import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
 import type { AdminDataImportResult, AdminGroup, GroupPlatform } from '@/types'
 import {
+  mergeNormalizedAdminAccountImports,
   normalizeAdminAccountImportPayload,
+  type AccountImportFormat,
   type NormalizedAdminAccountImport
 } from '@/utils/accountImportPayload'
 
@@ -178,14 +216,27 @@ const appStore = useAppStore()
 const importing = ref(false)
 const parsing = ref(false)
 const isDragOver = ref(false)
-const file = ref<File | null>(null)
+const selectedFiles = ref<File[]>([])
 const result = ref<AdminDataImportResult | null>(null)
 const selectedImport = ref<NormalizedAdminAccountImport | null>(null)
 const selectedGroupIds = ref<number[]>([])
+const detectedFormats = ref<AccountImportFormat[]>([])
+const validFileCount = ref(0)
 const parseError = ref('')
+const parseWarnings = ref<string[]>([])
 
 const fileInput = ref<HTMLInputElement | null>(null)
-const fileName = computed(() => file.value?.name || '')
+const directoryInput = ref<HTMLInputElement | null>(null)
+
+const fileLabel = computed(() => {
+  if (selectedFiles.value.length === 0) {
+    return ''
+  }
+  if (selectedFiles.value.length === 1) {
+    return selectedFiles.value[0].name
+  }
+  return t('admin.accounts.dataImportSelectedFiles', { count: selectedFiles.value.length })
+})
 
 const errorItems = computed(() => result.value?.errors || [])
 const importPlatforms = computed<GroupPlatform[]>(() => {
@@ -202,21 +253,30 @@ const detectedFormatLabel = computed(() => {
   if (!selectedImport.value) {
     return ''
   }
-  return selectedImport.value.format === 'openai-oauth'
+  if (detectedFormats.value.length > 1) {
+    return t('admin.accounts.dataImportFormatMixed')
+  }
+  return detectedFormats.value[0] === 'openai-oauth'
     ? t('admin.accounts.dataImportFormatOpenAI')
     : t('admin.accounts.dataImportFormatSub2api')
 })
 
 const resetState = () => {
-  file.value = null
+  selectedFiles.value = []
   result.value = null
   selectedImport.value = null
   selectedGroupIds.value = []
+  detectedFormats.value = []
+  validFileCount.value = 0
   parseError.value = ''
+  parseWarnings.value = []
   parsing.value = false
   isDragOver.value = false
   if (fileInput.value) {
     fileInput.value.value = ''
+  }
+  if (directoryInput.value) {
+    directoryInput.value.value = ''
   }
 }
 
@@ -231,6 +291,10 @@ watch(
 
 const openFilePicker = () => {
   fileInput.value?.click()
+}
+
+const openDirectoryPicker = () => {
+  directoryInput.value?.click()
 }
 
 const handleClose = () => {
@@ -256,26 +320,70 @@ const readFileAsText = async (sourceFile: File): Promise<string> => {
   })
 }
 
-const selectFile = async (selectedFile: File | null) => {
-  file.value = selectedFile
+const isImportableJSONFile = (sourceFile: File) => {
+  const name = sourceFile.name.toLowerCase()
+  return name.endsWith('.json') || sourceFile.type === 'application/json' || sourceFile.type === ''
+}
+
+const fileSortKey = (sourceFile: File) => {
+  const relativePath = (sourceFile as File & { webkitRelativePath?: string }).webkitRelativePath
+  return relativePath || sourceFile.name
+}
+
+const selectFiles = async (files: File[]) => {
+  const importableFiles = files.filter(isImportableJSONFile).sort((left, right) => fileSortKey(left).localeCompare(fileSortKey(right)))
+
+  selectedFiles.value = importableFiles
   result.value = null
   selectedImport.value = null
   selectedGroupIds.value = []
+  detectedFormats.value = []
+  validFileCount.value = 0
   parseError.value = ''
+  parseWarnings.value = []
 
-  if (!selectedFile) {
+  if (importableFiles.length === 0) {
+    parseError.value = t('admin.accounts.dataImportNoValidFiles')
     return
   }
 
   parsing.value = true
   try {
-    const text = await readFileAsText(selectedFile)
-    selectedImport.value = normalizeAdminAccountImportPayload(text)
-  } catch (error) {
-    parseError.value =
-      error instanceof SyntaxError
-        ? t('admin.accounts.dataImportParseFailed')
-        : t('admin.accounts.dataImportUnsupportedFormat')
+    const validImports: NormalizedAdminAccountImport[] = []
+    const formats = new Set<AccountImportFormat>()
+    const warnings: string[] = []
+    let firstFailureReason = ''
+
+    for (const sourceFile of importableFiles) {
+      try {
+        const text = await readFileAsText(sourceFile)
+        const normalized = normalizeAdminAccountImportPayload(text)
+        validImports.push(normalized)
+        formats.add(normalized.format)
+      } catch (error) {
+        const reason =
+          error instanceof SyntaxError
+            ? t('admin.accounts.dataImportParseFailed')
+            : t('admin.accounts.dataImportUnsupportedFormat')
+        if (!firstFailureReason) {
+          firstFailureReason = reason
+        }
+        warnings.push(`${fileSortKey(sourceFile)} — ${reason}`)
+      }
+    }
+
+    parseWarnings.value = warnings
+
+    if (validImports.length === 0) {
+      parseError.value = importableFiles.length === 1 && firstFailureReason
+        ? firstFailureReason
+        : t('admin.accounts.dataImportNoValidFiles')
+      return
+    }
+
+    validFileCount.value = validImports.length
+    detectedFormats.value = [...formats]
+    selectedImport.value = mergeNormalizedAdminAccountImports(validImports)
   } finally {
     parsing.value = false
   }
@@ -283,7 +391,12 @@ const selectFile = async (selectedFile: File | null) => {
 
 const handleFileChange = async (event: Event) => {
   const target = event.target as HTMLInputElement
-  await selectFile(target.files?.[0] || null)
+  await selectFiles(Array.from(target.files || []))
+}
+
+const handleDirectoryChange = async (event: Event) => {
+  const target = event.target as HTMLInputElement
+  await selectFiles(Array.from(target.files || []))
 }
 
 const handleDragEnter = () => {
@@ -307,11 +420,11 @@ const handleDrop = async (event: DragEvent) => {
   if (importing.value) {
     return
   }
-  await selectFile(event.dataTransfer?.files?.[0] || null)
+  await selectFiles(Array.from(event.dataTransfer?.files || []))
 }
 
 const handleImport = async () => {
-  if (!file.value) {
+  if (selectedFiles.value.length === 0) {
     appStore.showError(t('admin.accounts.dataImportSelectFile'))
     return
   }
@@ -333,6 +446,7 @@ const handleImport = async () => {
 
     const msgParams: Record<string, unknown> = {
       account_created: res.account_created,
+      account_updated: res.account_updated,
       account_failed: res.account_failed,
       proxy_created: res.proxy_created,
       proxy_reused: res.proxy_reused,
