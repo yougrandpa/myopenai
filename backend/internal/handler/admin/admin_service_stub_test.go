@@ -151,7 +151,16 @@ func (s *stubAdminService) GetAllGroups(ctx context.Context) ([]service.Group, e
 }
 
 func (s *stubAdminService) GetAllGroupsByPlatform(ctx context.Context, platform string) ([]service.Group, error) {
-	return s.groups, nil
+	if strings.TrimSpace(platform) == "" {
+		return s.groups, nil
+	}
+	filtered := make([]service.Group, 0, len(s.groups))
+	for i := range s.groups {
+		if strings.EqualFold(strings.TrimSpace(s.groups[i].Platform), strings.TrimSpace(platform)) {
+			filtered = append(filtered, s.groups[i])
+		}
+	}
+	return filtered, nil
 }
 
 func (s *stubAdminService) GetGroup(ctx context.Context, id int64) (*service.Group, error) {

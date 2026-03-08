@@ -141,6 +141,10 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 		result.Modified = true
 	}
 
+	if normalizeCodexInput(reqBody) {
+		result.Modified = true
+	}
+
 	// 续链场景保留 item_reference 与 id，避免 call_id 上下文丢失。
 	if input, ok := reqBody["input"].([]any); ok {
 		input = filterCodexInput(input, needsToolContinuation)
@@ -250,6 +254,36 @@ func isInstructionsEmpty(reqBody map[string]any) bool {
 		return true
 	}
 	return strings.TrimSpace(str) == ""
+}
+
+func normalizeCodexInput(reqBody map[string]any) bool {
+	raw, ok := reqBody["input"]
+	if !ok || raw == nil {
+		return false
+	}
+	switch input := raw.(type) {
+	case []any:
+		return false
+	case []map[string]any:
+		converted := make([]any, 0, len(input))
+		for _, item := range input {
+			converted = append(converted, item)
+		}
+		reqBody["input"] = converted
+		return true
+	case string:
+		reqBody["input"] = []any{map[string]any{
+			"role": "user",
+			"content": []any{map[string]any{
+				"type": "input_text",
+				"text": input,
+			}},
+		}}
+		return true
+	default:
+		reqBody["input"] = []any{input}
+		return true
+	}
 }
 
 // filterCodexInput 按需过滤 item_reference 与 id。

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -221,6 +222,34 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		addAccountIdentityKeys(accountIdentityIndex, account)
 	}
 
+	defaultGroupIDsByPlatform := make(map[string][]int64)
+	resolveDefaultGroupIDs := func(platform string) []int64 {
+		normalizedPlatform := strings.ToLower(strings.TrimSpace(platform))
+		if normalizedPlatform == "" {
+			return nil
+		}
+		if cached, ok := defaultGroupIDsByPlatform[normalizedPlatform]; ok {
+			return append([]int64(nil), cached...)
+		}
+		groups, groupErr := h.adminService.GetAllGroupsByPlatform(ctx, normalizedPlatform)
+		if groupErr != nil {
+			defaultGroupIDsByPlatform[normalizedPlatform] = nil
+			return nil
+		}
+		defaultGroupName := normalizedPlatform + "-default"
+		ids := make([]int64, 0, 1)
+		for i := range groups {
+			group := groups[i]
+			if !strings.EqualFold(strings.TrimSpace(group.Name), defaultGroupName) {
+				continue
+			}
+			ids = append(ids, group.ID)
+			break
+		}
+		defaultGroupIDsByPlatform[normalizedPlatform] = append([]int64(nil), ids...)
+		return append([]int64(nil), ids...)
+	}
+
 	for i := range dataPayload.Proxies {
 		item := dataPayload.Proxies[i]
 		key := item.ProxyKey
@@ -280,7 +309,11 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 	}
 
 	for i := range dataPayload.Accounts {
-		item := dataPayload.Accounts[i]
+		item := withImportedAccountDefaults(dataPayload.Accounts[i])
+		defaultGroupIDs := []int64(nil)
+		if len(req.GroupIDs) == 0 && !skipDefaultGroupBind {
+			defaultGroupIDs = resolveDefaultGroupIDs(item.Platform)
+		}
 		if err := validateDataAccount(item); err != nil {
 			result.AccountFailed++
 			result.Errors = append(result.Errors, DataImportError{
@@ -310,7 +343,11 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		duplicateID, ambiguousMatch := findMatchingImportedAccount(accountIdentityIndex, item)
 		if duplicateID > 0 {
 			existing := accountByID[duplicateID]
-			updateInput := buildDuplicateAccountUpdateInput(existing, item, proxyID, req.GroupIDs)
+			resolvedGroupIDs := append([]int64(nil), req.GroupIDs...)
+			if len(resolvedGroupIDs) == 0 && len(existing.GroupIDs) == 0 && len(defaultGroupIDs) > 0 {
+				resolvedGroupIDs = append([]int64(nil), defaultGroupIDs...)
+			}
+			updateInput := buildDuplicateAccountUpdateInput(existing, item, proxyID, resolvedGroupIDs)
 			if _, err := h.adminService.UpdateAccount(ctx, duplicateID, updateInput); err != nil {
 				result.AccountFailed++
 				result.Errors = append(result.Errors, DataImportError{
@@ -321,7 +358,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 				continue
 			}
 			result.AccountUpdated++
-			updatedSnapshot := applyImportedDuplicateAccountUpdate(existing, item, proxyID, req.GroupIDs)
+			updatedSnapshot := applyImportedDuplicateAccountUpdate(existing, item, proxyID, resolvedGroupIDs)
 			accountByID[duplicateID] = updatedSnapshot
 			addAccountIdentityKeys(accountIdentityIndex, updatedSnapshot)
 			continue
@@ -336,6 +373,11 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			continue
 		}
 
+		resolvedGroupIDs := append([]int64(nil), req.GroupIDs...)
+		if len(resolvedGroupIDs) == 0 && len(defaultGroupIDs) > 0 {
+			resolvedGroupIDs = append([]int64(nil), defaultGroupIDs...)
+		}
+
 		accountInput := &service.CreateAccountInput{
 			Name:                 item.Name,
 			Notes:                item.Notes,
@@ -347,7 +389,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			Concurrency:          item.Concurrency,
 			Priority:             item.Priority,
 			RateMultiplier:       item.RateMultiplier,
-			GroupIDs:             append([]int64(nil), req.GroupIDs...),
+			GroupIDs:             resolvedGroupIDs,
 			ExpiresAt:            item.ExpiresAt,
 			AutoPauseOnExpired:   item.AutoPauseOnExpired,
 			SkipDefaultGroupBind: skipDefaultGroupBind,
@@ -365,7 +407,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		}
 		result.AccountCreated++
 
-		createdSnapshot := buildImportedAccountSnapshot(created.ID, item, proxyID, req.GroupIDs)
+		createdSnapshot := buildImportedAccountSnapshot(created.ID, item, proxyID, resolvedGroupIDs)
 		accountByID[created.ID] = createdSnapshot
 		addAccountIdentityKeys(accountIdentityIndex, createdSnapshot)
 	}
@@ -461,6 +503,51 @@ func (h *AccountHandler) resolveExportProxies(ctx context.Context, accounts []se
 	}
 
 	return h.adminService.GetProxiesByIDs(ctx, ids)
+}
+
+func withImportedAccountDefaults(item DataAccount) DataAccount {
+	item.Credentials = cloneStringAnyMap(item.Credentials)
+	if shouldInjectDefaultOpenAIModelMapping(item) {
+		item.Credentials["model_mapping"] = buildDefaultOpenAIModelMapping()
+	}
+	return item
+}
+
+func shouldInjectDefaultOpenAIModelMapping(item DataAccount) bool {
+	if !strings.EqualFold(strings.TrimSpace(item.Platform), service.PlatformOpenAI) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(item.Type), service.AccountTypeOAuth) {
+		return false
+	}
+	if len(item.Credentials) == 0 {
+		return false
+	}
+	if existing, ok := item.Credentials["model_mapping"]; ok {
+		switch typed := existing.(type) {
+		case map[string]any:
+			return len(typed) == 0
+		case map[string]string:
+			return len(typed) == 0
+		case nil:
+			return true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func buildDefaultOpenAIModelMapping() map[string]any {
+	mapping := make(map[string]any, len(openaipkg.DefaultModelIDs()))
+	for _, modelID := range openaipkg.DefaultModelIDs() {
+		trimmed := strings.TrimSpace(modelID)
+		if trimmed == "" {
+			continue
+		}
+		mapping[trimmed] = trimmed
+	}
+	return mapping
 }
 
 func buildImportedAccountSnapshot(id int64, item DataAccount, proxyID *int64, groupIDs []int64) service.Account {

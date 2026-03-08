@@ -270,3 +270,45 @@ func TestIsInstructionsEmpty(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyCodexOAuthTransform_StringInputWrappedAsUserMessage(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"input": "Reply with OK only.",
+	}
+
+	result := applyCodexOAuthTransform(reqBody, false, false)
+
+	require.True(t, result.Modified)
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 1)
+	message, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "user", message["role"])
+	content, ok := message["content"].([]any)
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	part, ok := content[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "input_text", part["type"])
+	require.Equal(t, "Reply with OK only.", part["text"])
+}
+
+func TestApplyCodexOAuthTransform_ObjectInputWrappedAsArray(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"input": map[string]any{"type": "input_text", "text": "hello"},
+	}
+
+	result := applyCodexOAuthTransform(reqBody, false, false)
+
+	require.True(t, result.Modified)
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 1)
+	item, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "input_text", item["type"])
+	require.Equal(t, "hello", item["text"])
+}

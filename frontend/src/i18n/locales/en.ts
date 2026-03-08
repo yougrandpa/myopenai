@@ -1614,7 +1614,7 @@ export default {
       dataImportFormatSub2api: 'Sub2API export data',
       dataImportFormatOpenAI: 'OpenAI / Codex account JSON',
       dataImportFormatMixed: 'Mixed JSON batch import',
-      dataImportBindGroupsHint: 'Optional: directly bind selected groups to every account created or updated in this import. If left empty, the current behavior stays unchanged. When duplicates are found, credentials are refreshed while existing scheduling settings are preserved.',
+      dataImportBindGroupsHint: 'Optional: directly bind selected groups to every account created or updated in this import. If left empty, the platform default group will be bound automatically when available. When duplicates are found, credentials are refreshed while existing scheduling settings are preserved.',
       dataImportMixedPlatformHint: 'This import contains accounts from multiple platforms. Any selected groups will be bound to all imported accounts, so choose carefully.',
       dataImportSkippedFilesHint: 'Skipped {count} file(s) that could not be parsed or recognized:',
       dataImportResult: 'Import Result',

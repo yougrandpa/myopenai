@@ -1353,6 +1353,56 @@ func parseExtraFloat64(value any) float64 {
 	return 0
 }
 
+const openAILowQuotaRemainingThresholdPercent = 5.0
+
+func clampPercent(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func (a *Account) OpenAIQuotaRemainingPercent() (float64, bool) {
+	if a == nil || !a.IsOpenAI() || len(a.Extra) == 0 {
+		return 0, false
+	}
+	keys := []string{
+		"codex_5h_used_percent",
+		"codex_7d_used_percent",
+		"codex_primary_used_percent",
+		"codex_secondary_used_percent",
+	}
+	hasUsage := false
+	maxUsedPercent := 0.0
+	for _, key := range keys {
+		raw, ok := a.Extra[key]
+		if !ok || raw == nil {
+			continue
+		}
+		usedPercent := clampPercent(parseExtraFloat64(raw))
+		if !hasUsage || usedPercent > maxUsedPercent {
+			maxUsedPercent = usedPercent
+		}
+		hasUsage = true
+	}
+	if !hasUsage {
+		return 0, false
+	}
+	remainingPercent := 100 - maxUsedPercent
+	if remainingPercent < 0 {
+		remainingPercent = 0
+	}
+	return remainingPercent, true
+}
+
+func (a *Account) ShouldDeprioritizeForLowQuota() bool {
+	remainingPercent, ok := a.OpenAIQuotaRemainingPercent()
+	return ok && remainingPercent <= openAILowQuotaRemainingThresholdPercent
+}
+
 // parseExtraInt 从 extra 字段解析 int 值
 // ParseExtraInt 从 extra 字段的 any 值解析为 int。
 // 支持 int, int64, float64, json.Number, string 类型，无法解析时返回 0。

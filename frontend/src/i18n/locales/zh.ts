@@ -1701,7 +1701,7 @@ export default {
       dataImportFormatSub2api: 'Sub2API 导出数据',
       dataImportFormatOpenAI: 'OpenAI / Codex 账号 JSON',
       dataImportFormatMixed: '混合 JSON 批量导入',
-      dataImportBindGroupsHint: '可选：为本次导入创建或更新的所有账号直接绑定分组。未选择时保持当前行为。若发现重复账号，将自动更新凭证并保留现有调度设置。',
+      dataImportBindGroupsHint: '可选：为本次导入创建或更新的所有账号直接绑定分组。未选择时，系统会自动绑定对应平台的默认分组（如存在）。若发现重复账号，将自动更新凭证并保留现有调度设置。',
       dataImportMixedPlatformHint: '当前导入文件包含多个平台账号；若勾选分组，这些分组会统一绑定到所有导入账号，请谨慎选择。',
       dataImportSkippedFilesHint: '已跳过 {count} 个无法识别或解析失败的文件：',
       dataImportResult: '导入结果',

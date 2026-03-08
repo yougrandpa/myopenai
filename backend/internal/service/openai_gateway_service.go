@@ -1144,6 +1144,13 @@ func (s *OpenAIGatewayService) selectBestAccount(accounts []Account, requestedMo
 // isBetterAccount checks if candidate is better than current.
 // Rules: higher priority (lower value) wins; same priority: never used > least recently used.
 func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool {
+	// 低额度账号不再优先，避免顶到 100% 导致上下文/数据丢失。
+	candidateLowQuota := candidate.ShouldDeprioritizeForLowQuota()
+	currentLowQuota := current.ShouldDeprioritizeForLowQuota()
+	if candidateLowQuota != currentLowQuota {
+		return !candidateLowQuota
+	}
+
 	// 优先级更高（数值更小）
 	// Higher priority (lower value)
 	if candidate.Priority < current.Priority {
@@ -1339,6 +1346,11 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		if len(available) > 0 {
 			sort.SliceStable(available, func(i, j int) bool {
 				a, b := available[i], available[j]
+				lowQuotaA := a.account.ShouldDeprioritizeForLowQuota()
+				lowQuotaB := b.account.ShouldDeprioritizeForLowQuota()
+				if lowQuotaA != lowQuotaB {
+					return !lowQuotaA
+				}
 				if a.account.Priority != b.account.Priority {
 					return a.account.Priority < b.account.Priority
 				}

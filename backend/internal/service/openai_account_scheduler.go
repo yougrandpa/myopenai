@@ -673,6 +673,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			weights.Queue*queueFactor +
 			weights.ErrorRate*errorFactor +
 			weights.TTFT*ttftFactor
+		if item.account.ShouldDeprioritizeForLowQuota() {
+			item.score -= 1000
+		}
 	}
 
 	topK := s.service.openAIWSLBTopK()

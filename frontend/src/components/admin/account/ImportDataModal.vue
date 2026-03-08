@@ -436,10 +436,11 @@ const handleImport = async () => {
 
   importing.value = true
   try {
+    const hasSelectedGroups = selectedGroupIds.value.length > 0
     const res = await adminAPI.accounts.importData({
       data: selectedImport.value.payload,
-      skip_default_group_bind: true,
-      group_ids: selectedGroupIds.value.length ? selectedGroupIds.value : undefined
+      skip_default_group_bind: hasSelectedGroups,
+      group_ids: hasSelectedGroups ? selectedGroupIds.value : undefined
     })
 
     result.value = res

@@ -178,6 +178,10 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		s.handleAuthError(ctx, account, msg)
 		shouldDisable = true
 	case 403:
+		if s.tryHandleOpenAITransientOAuth403(ctx, account, headers, responseBody, upstreamMsg) {
+			shouldDisable = true
+			break
+		}
 		// 禁止访问：停止调度，记录错误
 		msg := "Access forbidden (403): account may be suspended or lack permissions"
 		if upstreamMsg != "" {
@@ -598,6 +602,42 @@ func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account
 		return
 	}
 	slog.Warn("account_disabled_auth_error", "account_id", account.ID, "error", errorMsg)
+}
+
+func (s *RateLimitService) tryHandleOpenAITransientOAuth403(ctx context.Context, account *Account, headers http.Header, responseBody []byte, upstreamMsg string) bool {
+	if s == nil || s.accountRepo == nil || account == nil {
+		return false
+	}
+	if account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
+		return false
+	}
+	if strings.TrimSpace(upstreamMsg) != "" {
+		return false
+	}
+	requestID := strings.TrimSpace(headers.Get("x-request-id"))
+	cfRay := strings.TrimSpace(headers.Get("cf-ray"))
+	bodyText := strings.ToLower(strings.TrimSpace(string(responseBody)))
+	if requestID != "" {
+		return false
+	}
+	if cfRay == "" && !strings.Contains(bodyText, "cloudflare") {
+		return false
+	}
+	cooldownMinutes := 10
+	if s.cfg != nil && s.cfg.RateLimit.OAuth401CooldownMinutes > 0 {
+		cooldownMinutes = s.cfg.RateLimit.OAuth401CooldownMinutes
+	}
+	until := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+	reason := "OpenAI OAuth temporary 403 blocked by edge; retry later"
+	if cfRay != "" {
+		reason += " (cf-ray: " + cfRay + ")"
+	}
+	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
+		slog.Warn("openai_oauth_403_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+		return false
+	}
+	slog.Warn("openai_oauth_temp_unschedulable_403", "account_id", account.ID, "cf_ray", cfRay, "until", until)
+	return true
 }
 
 // handleCustomErrorCode 处理自定义错误码，停止账号调度

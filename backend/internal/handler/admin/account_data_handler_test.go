@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -328,4 +329,123 @@ func TestImportDataUpdatesDuplicateAccountByIdentity(t *testing.T) {
 	require.Equal(t, 0, resp.Data.AccountCreated)
 	require.Equal(t, 1, resp.Data.AccountUpdated)
 	require.Equal(t, 0, resp.Data.AccountFailed)
+}
+
+func TestImportDataUsesPlatformDefaultGroupWhenNoGroupSelected(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+	adminSvc.groups = []service.Group{{
+		ID:       11,
+		Name:     "openai-default",
+		Platform: service.PlatformOpenAI,
+		Status:   service.StatusActive,
+	}}
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":        "acc",
+					"platform":    service.PlatformOpenAI,
+					"type":        service.AccountTypeOAuth,
+					"credentials": map[string]any{"access_token": "at-1"},
+					"concurrency": 3,
+					"priority":    50,
+				},
+			},
+		},
+		"skip_default_group_bind": false,
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, adminSvc.createdAccounts, 1)
+	require.Equal(t, []int64{11}, adminSvc.createdAccounts[0].GroupIDs)
+}
+
+func TestImportDataUpdatesDuplicateWithPlatformDefaultGroupWhenUngrouped(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+	adminSvc.groups = []service.Group{{
+		ID:       11,
+		Name:     "openai-default",
+		Platform: service.PlatformOpenAI,
+		Status:   service.StatusActive,
+	}}
+	adminSvc.accounts = []service.Account{{
+		ID:          42,
+		Name:        "existing-openai",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeOAuth,
+		Credentials: map[string]any{"access_token": "old-at", "chatgpt_account_id": "acc-123"},
+		Status:      service.StatusActive,
+	}}
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":        "import@example.com",
+					"platform":    service.PlatformOpenAI,
+					"type":        service.AccountTypeOAuth,
+					"credentials": map[string]any{"access_token": "new-at", "chatgpt_account_id": "acc-123"},
+					"extra":       map[string]any{"email": "import@example.com"},
+					"concurrency": 10,
+					"priority":    1,
+				},
+			},
+		},
+		"skip_default_group_bind": false,
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, adminSvc.updatedAccounts, 1)
+	require.NotNil(t, adminSvc.updatedAccounts[0].GroupIDs)
+	require.Equal(t, []int64{11}, *adminSvc.updatedAccounts[0].GroupIDs)
+}
+
+func TestImportDataAddsDefaultOpenAIModelMapping(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":        "acc",
+					"platform":    service.PlatformOpenAI,
+					"type":        service.AccountTypeOAuth,
+					"credentials": map[string]any{"access_token": "at-1", "refresh_token": "rt-1"},
+					"concurrency": 3,
+					"priority":    50,
+				},
+			},
+		},
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, adminSvc.createdAccounts, 1)
+	mapping, ok := adminSvc.createdAccounts[0].Credentials["model_mapping"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, openaipkg.DefaultTestModel, mapping[openaipkg.DefaultTestModel])
 }

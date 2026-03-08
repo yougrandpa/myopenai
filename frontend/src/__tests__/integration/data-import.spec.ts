@@ -170,4 +170,58 @@ describe('ImportDataModal', () => {
     expect(showSuccess).toHaveBeenCalledWith('admin.accounts.dataImportSuccess')
   })
 
+  it('未选分组时允许后端绑定默认分组', async () => {
+    importData.mockResolvedValue({
+      proxy_created: 0,
+      proxy_reused: 0,
+      proxy_failed: 0,
+      account_created: 1,
+      account_updated: 0,
+      account_failed: 0,
+      errors: []
+    })
+
+    const wrapper = mount(ImportDataModal, {
+      props: { show: true },
+      global: {
+        stubs: {
+          BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
+          GroupSelector: { template: '<div />' }
+        }
+      }
+    })
+
+    const input = wrapper.get('[data-testid="file-input"]')
+    const file = new File(['{}'], 'codex.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', {
+      value: () =>
+        Promise.resolve(
+          JSON.stringify({
+            access_token: 'at-1',
+            refresh_token: 'rt-1',
+            email: 'import@example.com',
+            account_id: 'acc-123'
+          })
+        )
+    })
+    Object.defineProperty(input.element, 'files', {
+      value: [file]
+    })
+
+    await input.trigger('change')
+    await Promise.resolve()
+    await wrapper.find('form').trigger('submit')
+    await Promise.resolve()
+
+    expect(importData).toHaveBeenCalledTimes(1)
+    expect(importData).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        type: 'sub2api-data',
+        version: 1
+      }),
+      skip_default_group_bind: false,
+      group_ids: undefined
+    })
+  })
+
 })

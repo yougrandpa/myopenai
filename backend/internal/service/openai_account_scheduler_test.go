@@ -339,6 +339,69 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
 	require.Equal(t, 0, decision.CandidateCount)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_DeprioritizesLowQuotaAccount(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(1100)
+	accounts := []Account{
+		{
+			ID:          3101,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			Extra:       map[string]any{"codex_5h_used_percent": 96.0},
+		},
+		{
+			ID:          3102,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    9,
+			Extra:       map[string]any{"codex_5h_used_percent": 70.0},
+		},
+	}
+
+	concurrencyCache := stubConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			3101: {AccountID: 3101, LoadRate: 10, WaitingCount: 0},
+			3102: {AccountID: 3102, LoadRate: 10, WaitingCount: 0},
+		},
+		acquireResults: map[int64]bool{
+			3101: true,
+			3102: true,
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
+		cache:              &stubGatewayCache{},
+		cfg:                &config.Config{},
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(3102), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(11)
