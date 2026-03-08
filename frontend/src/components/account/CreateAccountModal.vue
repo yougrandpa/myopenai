@@ -50,7 +50,7 @@
         <input
           v-model="form.name"
           type="text"
-          required
+          :required="!canAutogenerateOAuthAccountName"
           class="input"
           :placeholder="t('admin.accounts.enterAccountName')"
           data-tour="account-form-name"
@@ -2487,6 +2487,7 @@ import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import { applyInterceptWarmup } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
+import { parseOpenAIRawRefreshTokens } from '@/utils/openaiRefreshTokenParser'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import {
   // OPENAI_WS_MODE_CTX_POOL,
@@ -3402,6 +3403,23 @@ const buildSoraExtra = (
   return Object.keys(extra).length > 0 ? extra : undefined
 }
 
+const resolveImportedOpenAIAccountName = (
+  index: number,
+  total: number,
+  tokenInfo?: Record<string, unknown>
+) => {
+  const trimmedName = form.name.trim()
+  const baseName = trimmedName || [
+    typeof tokenInfo?.email === 'string' ? tokenInfo.email : '',
+    typeof tokenInfo?.chatgpt_account_id === 'string' ? tokenInfo.chatgpt_account_id : '',
+    typeof tokenInfo?.chatgpt_user_id === 'string' ? tokenInfo.chatgpt_user_id : ''
+  ].find((value) => value.trim().length > 0) || `${form.platform}-imported`
+
+  return total > 1 ? `${baseName} #${index + 1}` : baseName
+}
+
+const canAutogenerateOAuthAccountName = computed(() => form.platform === 'openai' || form.platform === 'sora')
+
 // Helper function to create account with mixed channel warning handling
 const doCreateAccount = async (payload: CreateAccountRequest) => {
   const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
@@ -3436,7 +3454,7 @@ const handleMixedChannelCancel = () => {
 const handleSubmit = async () => {
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
-    if (!form.name.trim()) {
+    if (!form.name.trim() && !canAutogenerateOAuthAccountName.value) {
       appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
       return
     }
@@ -3625,7 +3643,7 @@ const handleImportAccessToken = async (accessTokenInput: string) => {
         }
         const soraExtra = buildSoraExtra()
 
-        const accountName = accessTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
+        const accountName = resolveImportedOpenAIAccountName(i, accessTokens.length)
         await adminAPI.accounts.create({
           name: accountName,
           notes: form.notes,
@@ -3754,9 +3772,11 @@ const handleOpenAIExchange = async (authCode: string) => {
 
     let openaiAccountId: string | number | undefined
 
+    const accountName = resolveImportedOpenAIAccountName(0, 1, tokenInfo as Record<string, unknown>)
+
     if (shouldCreateOpenAI) {
       const openaiAccount = await adminAPI.accounts.create({
-        name: form.name,
+        name: accountName,
         notes: form.notes,
         platform: 'openai',
         type: 'oauth',
@@ -3783,7 +3803,7 @@ const handleOpenAIExchange = async (authCode: string) => {
         expires_at: credentials.expires_at
       }
 
-      const soraName = shouldCreateOpenAI ? `${form.name} (Sora)` : form.name
+      const soraName = shouldCreateOpenAI ? `${accountName} (Sora)` : accountName
       const soraExtra = buildSoraExtra(shouldCreateOpenAI ? extra : oauthExtra, openaiAccountId)
       await adminAPI.accounts.create({
         name: soraName,
@@ -3819,11 +3839,7 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
   const oauthClient = activeOpenAIOAuth.value
   if (!refreshTokenInput.trim()) return
 
-  // Parse multiple refresh tokens (one per line)
-  const refreshTokens = refreshTokenInput
-    .split('\n')
-    .map((rt) => rt.trim())
-    .filter((rt) => rt)
+  const refreshTokens = parseOpenAIRawRefreshTokens(refreshTokenInput)
 
   if (refreshTokens.length === 0) {
     oauthClient.error.value = t('admin.accounts.oauth.openai.pleaseEnterRefreshToken')
@@ -3866,7 +3882,7 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
         }
 
         // Generate account name with index for batch
-        const accountName = refreshTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
+        const accountName = resolveImportedOpenAIAccountName(i, refreshTokens.length, tokenInfo as Record<string, unknown>)
 
         let openaiAccountId: string | number | undefined
 
@@ -3987,7 +4003,7 @@ const handleSoraValidateST = async (sessionTokenInput: string) => {
         const oauthExtra = oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
         const soraExtra = buildSoraExtra(oauthExtra)
 
-        const accountName = sessionTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
+        const accountName = resolveImportedOpenAIAccountName(i, sessionTokens.length, tokenInfo as Record<string, unknown>)
         await adminAPI.accounts.create({
           name: accountName,
           notes: form.notes,

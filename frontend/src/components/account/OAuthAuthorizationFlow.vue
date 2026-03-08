@@ -102,6 +102,30 @@
                 class="input w-full resize-y font-mono text-sm"
                 :placeholder="t(getOAuthKey('refreshTokenPlaceholder'))"
               ></textarea>
+              <div
+                v-if="isOpenAI"
+                class="mt-3 flex items-center justify-between gap-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-2 dark:border-dark-600 dark:bg-dark-800"
+              >
+                <div class="min-w-0 truncate text-xs text-gray-600 dark:text-dark-300">
+                  {{ refreshTokenFileName || 'JSON / TXT' }}
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-secondary shrink-0"
+                  :disabled="loading"
+                  @click="openRefreshTokenFilePicker"
+                >
+                  {{ t('common.chooseFile') }}
+                </button>
+              </div>
+              <input
+                v-if="isOpenAI"
+                ref="refreshTokenFileInput"
+                type="file"
+                class="hidden"
+                accept="application/json,.json,text/plain,.txt"
+                @change="handleRefreshTokenFileChange"
+              />
               <p
                 v-if="parsedRefreshTokenCount > 1"
                 class="mt-1 text-xs text-blue-600 dark:text-blue-400"
@@ -742,6 +766,7 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useClipboard } from '@/composables/useClipboard'
+import { parseOpenAIRawRefreshTokens } from '@/utils/openaiRefreshTokenParser'
 import { parseSoraRawTokens } from '@/utils/soraTokenParser'
 import Icon from '@/components/icons/Icon.vue'
 import type { AddMethod, AuthInputMethod } from '@/composables/useAccountOAuth'
@@ -827,6 +852,8 @@ const inputMethod = ref<AuthInputMethod>(props.showCookieOption ? 'manual' : 'ma
 const authCodeInput = ref('')
 const sessionKeyInput = ref('')
 const refreshTokenInput = ref('')
+const refreshTokenFileInput = ref<HTMLInputElement | null>(null)
+const refreshTokenFileName = ref('')
 const sessionTokenInput = ref('')
 const accessTokenInput = ref('')
 const showHelpDialog = ref(false)
@@ -849,6 +876,10 @@ const parsedKeyCount = computed(() => {
 
 // Computed: count of refresh tokens entered
 const parsedRefreshTokenCount = computed(() => {
+  if (props.platform === 'openai' || props.platform === 'sora') {
+    return parseOpenAIRawRefreshTokens(refreshTokenInput.value).length
+  }
+
   return refreshTokenInput.value
     .split('\n')
     .map((rt) => rt.trim())
@@ -949,6 +980,43 @@ const handleValidateRefreshToken = () => {
   }
 }
 
+const openRefreshTokenFilePicker = () => {
+  refreshTokenFileInput.value?.click()
+}
+
+const readFileAsText = async (sourceFile: File): Promise<string> => {
+  if (typeof sourceFile.text === 'function') {
+    return sourceFile.text()
+  }
+
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'))
+    reader.readAsText(sourceFile)
+  })
+}
+
+const handleRefreshTokenFileChange = async (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const sourceFile = target.files?.[0]
+  if (!sourceFile) {
+    return
+  }
+
+  refreshTokenFileName.value = sourceFile.name
+
+  try {
+    const text = await readFileAsText(sourceFile)
+    refreshTokenInput.value = text
+    if (text.trim()) {
+      emit('validate-refresh-token', text.trim())
+    }
+  } finally {
+    target.value = ''
+  }
+}
+
 const handleValidateSessionToken = () => {
   if (parsedSessionTokenCount.value > 0) {
     emit('validate-session-token', parsedSessionTokensText.value)
@@ -984,6 +1052,10 @@ defineExpose({
     projectId.value = ''
     sessionKeyInput.value = ''
     refreshTokenInput.value = ''
+    refreshTokenFileName.value = ''
+    if (refreshTokenFileInput.value) {
+      refreshTokenFileInput.value.value = ''
+    }
     sessionTokenInput.value = ''
     inputMethod.value = 'manual'
     showHelpDialog.value = false

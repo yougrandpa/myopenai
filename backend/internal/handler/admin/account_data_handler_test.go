@@ -172,6 +172,41 @@ func TestExportDataWithoutProxies(t *testing.T) {
 	require.Nil(t, resp.Data.Accounts[0].ProxyKey)
 }
 
+
+func TestImportDataForwardsSelectedGroupIDs(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":        "acc",
+					"platform":    service.PlatformOpenAI,
+					"type":        service.AccountTypeOAuth,
+					"credentials": map[string]any{"token": "x"},
+					"concurrency": 3,
+					"priority":    50,
+				},
+			},
+		},
+		"skip_default_group_bind": true,
+		"group_ids":               []int64{2},
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdAccounts, 1)
+	require.Equal(t, []int64{2}, adminSvc.createdAccounts[0].GroupIDs)
+}
+
 func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 	router, adminSvc := setupAccountDataRouter()
 

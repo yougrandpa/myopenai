@@ -196,6 +196,9 @@ export function useOpenAIOAuth(options?: UseOpenAIOAuthOptions) {
     if (tokenInfo.client_id) {
       creds.client_id = tokenInfo.client_id
     }
+    if (tokenInfo.id_token) {
+      creds.id_token = tokenInfo.id_token
+    }
 
     // Include OpenAI specific IDs (required for forwarding)
     if (tokenInfo.chatgpt_account_id) {

@@ -19,17 +19,33 @@
       <div>
         <label class="input-label">{{ t('admin.accounts.dataImportFile') }}</label>
         <div
-          class="flex items-center justify-between gap-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-3 dark:border-dark-600 dark:bg-dark-800"
+          class="rounded-lg border border-dashed p-4 transition-colors"
+          :class="isDragOver
+            ? 'border-primary-400 bg-primary-50 dark:border-primary-500 dark:bg-primary-900/20'
+            : 'border-gray-300 bg-gray-50 dark:border-dark-600 dark:bg-dark-800'"
+          @dragenter.prevent="handleDragEnter"
+          @dragover.prevent="handleDragOver"
+          @dragleave.prevent="handleDragLeave"
+          @drop.prevent="handleDrop"
         >
-          <div class="min-w-0">
-            <div class="truncate text-sm text-gray-700 dark:text-dark-200">
-              {{ fileName || t('admin.accounts.dataImportSelectFile') }}
+          <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <div class="truncate text-sm text-gray-700 dark:text-dark-200">
+                {{ fileName || t('admin.accounts.dataImportSelectFile') }}
+              </div>
+              <div class="text-xs text-gray-500 dark:text-dark-400">
+                {{ t('admin.accounts.dataImportFileHint') }}
+              </div>
             </div>
-            <div class="text-xs text-gray-500 dark:text-dark-400">JSON (.json)</div>
+            <button
+              type="button"
+              class="btn btn-secondary shrink-0"
+              :disabled="importing || parsing"
+              @click="openFilePicker"
+            >
+              {{ t('common.chooseFile') }}
+            </button>
           </div>
-          <button type="button" class="btn btn-secondary shrink-0" @click="openFilePicker">
-            {{ t('common.chooseFile') }}
-          </button>
         </div>
         <input
           ref="fileInput"
@@ -38,6 +54,50 @@
           accept="application/json,.json"
           @change="handleFileChange"
         />
+      </div>
+
+      <div
+        v-if="selectedImport"
+        class="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm dark:border-emerald-800 dark:bg-emerald-900/20"
+      >
+        <div>
+          <div class="font-medium text-emerald-800 dark:text-emerald-200">
+            {{ t('admin.accounts.dataImportDetected') }}
+          </div>
+          <div class="text-emerald-700 dark:text-emerald-300">
+            {{
+              t('admin.accounts.dataImportDetectedSummary', {
+                format: detectedFormatLabel,
+                account_count: selectedImport.accountCount,
+                proxy_count: selectedImport.proxyCount
+              })
+            }}
+          </div>
+        </div>
+
+        <div class="border-t border-emerald-200 pt-3 dark:border-emerald-800">
+          <p class="mb-2 text-xs text-emerald-700 dark:text-emerald-300">
+            {{ t('admin.accounts.dataImportBindGroupsHint') }}
+          </p>
+          <GroupSelector
+            v-model="selectedGroupIds"
+            :groups="groups"
+            :platform="groupSelectorPlatform"
+          />
+          <p
+            v-if="hasMixedPlatforms"
+            class="mt-2 text-xs text-amber-700 dark:text-amber-300"
+          >
+            {{ t('admin.accounts.dataImportMixedPlatformHint') }}
+          </p>
+        </div>
+      </div>
+
+      <div
+        v-if="parseError"
+        class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-600 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+      >
+        {{ parseError }}
       </div>
 
       <div
@@ -75,7 +135,7 @@
           class="btn btn-primary"
           type="submit"
           form="import-data-form"
-          :disabled="importing"
+          :disabled="importing || parsing || !selectedImport"
         >
           {{ importing ? t('admin.accounts.dataImporting') : t('admin.accounts.dataImportButton') }}
         </button>
@@ -88,12 +148,18 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import GroupSelector from '@/components/common/GroupSelector.vue'
 import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
-import type { AdminDataImportResult } from '@/types'
+import type { AdminDataImportResult, AdminGroup, GroupPlatform } from '@/types'
+import {
+  normalizeAdminAccountImportPayload,
+  type NormalizedAdminAccountImport
+} from '@/utils/accountImportPayload'
 
 interface Props {
   show: boolean
+  groups?: AdminGroup[]
 }
 
 interface Emits {
@@ -101,41 +167,70 @@ interface Emits {
   (e: 'imported'): void
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  groups: () => []
+})
 const emit = defineEmits<Emits>()
 
 const { t } = useI18n()
 const appStore = useAppStore()
 
 const importing = ref(false)
+const parsing = ref(false)
+const isDragOver = ref(false)
 const file = ref<File | null>(null)
 const result = ref<AdminDataImportResult | null>(null)
+const selectedImport = ref<NormalizedAdminAccountImport | null>(null)
+const selectedGroupIds = ref<number[]>([])
+const parseError = ref('')
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const fileName = computed(() => file.value?.name || '')
 
 const errorItems = computed(() => result.value?.errors || [])
+const importPlatforms = computed<GroupPlatform[]>(() => {
+  if (!selectedImport.value) {
+    return []
+  }
+  return [...new Set(selectedImport.value.payload.accounts.map((account) => account.platform as GroupPlatform))]
+})
+const hasMixedPlatforms = computed(() => importPlatforms.value.length > 1)
+const groupSelectorPlatform = computed<GroupPlatform | undefined>(() =>
+  importPlatforms.value.length === 1 ? importPlatforms.value[0] : undefined
+)
+const detectedFormatLabel = computed(() => {
+  if (!selectedImport.value) {
+    return ''
+  }
+  return selectedImport.value.format === 'openai-oauth'
+    ? t('admin.accounts.dataImportFormatOpenAI')
+    : t('admin.accounts.dataImportFormatSub2api')
+})
+
+const resetState = () => {
+  file.value = null
+  result.value = null
+  selectedImport.value = null
+  selectedGroupIds.value = []
+  parseError.value = ''
+  parsing.value = false
+  isDragOver.value = false
+  if (fileInput.value) {
+    fileInput.value.value = ''
+  }
+}
 
 watch(
   () => props.show,
   (open) => {
     if (open) {
-      file.value = null
-      result.value = null
-      if (fileInput.value) {
-        fileInput.value.value = ''
-      }
+      resetState()
     }
   }
 )
 
 const openFilePicker = () => {
   fileInput.value?.click()
-}
-
-const handleFileChange = (event: Event) => {
-  const target = event.target as HTMLInputElement
-  file.value = target.files?.[0] || null
 }
 
 const handleClose = () => {
@@ -161,20 +256,77 @@ const readFileAsText = async (sourceFile: File): Promise<string> => {
   })
 }
 
+const selectFile = async (selectedFile: File | null) => {
+  file.value = selectedFile
+  result.value = null
+  selectedImport.value = null
+  selectedGroupIds.value = []
+  parseError.value = ''
+
+  if (!selectedFile) {
+    return
+  }
+
+  parsing.value = true
+  try {
+    const text = await readFileAsText(selectedFile)
+    selectedImport.value = normalizeAdminAccountImportPayload(text)
+  } catch (error) {
+    parseError.value =
+      error instanceof SyntaxError
+        ? t('admin.accounts.dataImportParseFailed')
+        : t('admin.accounts.dataImportUnsupportedFormat')
+  } finally {
+    parsing.value = false
+  }
+}
+
+const handleFileChange = async (event: Event) => {
+  const target = event.target as HTMLInputElement
+  await selectFile(target.files?.[0] || null)
+}
+
+const handleDragEnter = () => {
+  if (!importing.value) {
+    isDragOver.value = true
+  }
+}
+
+const handleDragOver = () => {
+  if (!importing.value) {
+    isDragOver.value = true
+  }
+}
+
+const handleDragLeave = () => {
+  isDragOver.value = false
+}
+
+const handleDrop = async (event: DragEvent) => {
+  isDragOver.value = false
+  if (importing.value) {
+    return
+  }
+  await selectFile(event.dataTransfer?.files?.[0] || null)
+}
+
 const handleImport = async () => {
   if (!file.value) {
     appStore.showError(t('admin.accounts.dataImportSelectFile'))
     return
   }
 
+  if (parseError.value || !selectedImport.value) {
+    appStore.showError(parseError.value || t('admin.accounts.dataImportUnsupportedFormat'))
+    return
+  }
+
   importing.value = true
   try {
-    const text = await readFileAsText(file.value)
-    const dataPayload = JSON.parse(text)
-
     const res = await adminAPI.accounts.importData({
-      data: dataPayload,
-      skip_default_group_bind: true
+      data: selectedImport.value.payload,
+      skip_default_group_bind: true,
+      group_ids: selectedGroupIds.value.length ? selectedGroupIds.value : undefined
     })
 
     result.value = res
@@ -184,7 +336,7 @@ const handleImport = async () => {
       account_failed: res.account_failed,
       proxy_created: res.proxy_created,
       proxy_reused: res.proxy_reused,
-      proxy_failed: res.proxy_failed,
+      proxy_failed: res.proxy_failed
     }
     if (res.account_failed > 0 || res.proxy_failed > 0) {
       appStore.showError(t('admin.accounts.dataImportCompletedWithErrors', msgParams))
@@ -193,11 +345,7 @@ const handleImport = async () => {
       emit('imported')
     }
   } catch (error: any) {
-    if (error instanceof SyntaxError) {
-      appStore.showError(t('admin.accounts.dataImportParseFailed'))
-    } else {
-      appStore.showError(error?.message || t('admin.accounts.dataImportFailed'))
-    }
+    appStore.showError(error?.message || t('admin.accounts.dataImportFailed'))
   } finally {
     importing.value = false
   }

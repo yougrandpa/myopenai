@@ -134,6 +134,7 @@
         :show-project-id="isGemini && geminiOAuthType === 'code_assist'"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
+        @validate-refresh-token="handleValidateRefreshToken"
       />
 
     </div>
@@ -501,6 +502,33 @@ const handleExchangeCode = async () => {
     } finally {
       claudeOAuth.loading.value = false
     }
+  }
+}
+
+const handleValidateRefreshToken = async (refreshToken: string) => {
+  if (!props.account || !isOpenAILike.value || !refreshToken.trim()) return
+
+  const oauthClient = activeOpenAIOAuth.value
+  const tokenInfo = await oauthClient.validateRefreshToken(refreshToken.trim(), props.account.proxy_id)
+  if (!tokenInfo) return
+
+  const credentials = oauthClient.buildCredentials(tokenInfo)
+  const extra = oauthClient.buildExtraInfo(tokenInfo)
+
+  try {
+    await adminAPI.accounts.update(props.account.id, {
+      type: 'oauth',
+      credentials,
+      extra
+    })
+
+    const updatedAccount = await adminAPI.accounts.clearError(props.account.id)
+    appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+    emit('reauthorized', updatedAccount)
+    handleClose()
+  } catch (error: any) {
+    oauthClient.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
+    appStore.showError(oauthClient.error.value)
   }
 }
 
