@@ -271,6 +271,35 @@ docker-compose -f docker-compose.local.yml pull
 docker-compose -f docker-compose.local.yml up -d
 ```
 
+#### 重新构建并重启（本地开发）
+
+`deploy/` 目录下的 Compose 文件默认使用线上镜像（`weishaw/sub2api:latest`）。  
+如果你修改了代码（前端或后端），希望在本地重新构建 Docker 镜像并重启服务（会自动构建前端并嵌入后端），
+可以使用额外的 Compose 覆盖文件 `deploy/docker-compose.codex.yml`：
+
+```yaml
+# deploy/docker-compose.codex.yml
+services:
+  sub2api:
+    image: sub2api-local:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile
+```
+
+```bash
+cd deploy
+
+# 从本地源码重新构建镜像（包含前端构建）
+docker compose -f docker-compose.local.yml -f docker-compose.codex.yml build sub2api
+
+# 用新镜像重建容器
+docker compose -f docker-compose.local.yml -f docker-compose.codex.yml up -d --force-recreate sub2api
+
+# 健康检查
+curl -fsS "http://127.0.0.1:${SERVER_PORT:-8080}/health"
+```
+
 #### 轻松迁移（本地目录版）
 
 使用 `docker-compose.local.yml` 时，可以轻松迁移到新服务器：

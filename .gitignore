@@ -133,3 +133,6 @@ frontend/coverage/
 aicodex
 output/
 
+# Local helper files (may contain sensitive info)
+.gateway-access.txt
+.local-admin.txt

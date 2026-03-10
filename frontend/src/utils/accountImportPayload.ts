@@ -235,6 +235,8 @@ function buildCredentials(candidate: OpenAIImportCandidate): Record<string, unkn
   }
   if (typeof candidate.expires_at === 'number' && Number.isFinite(candidate.expires_at)) {
     credentials.expires_at = candidate.expires_at
+  } else if (typeof candidate.expires_in === 'number' && Number.isFinite(candidate.expires_in) && candidate.expires_in > 0) {
+    credentials.expires_at = Math.floor(Date.now() / 1000) + Math.floor(candidate.expires_in)
   }
 
   return credentials

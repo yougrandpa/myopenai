@@ -255,6 +255,36 @@ docker-compose -f docker-compose.local.yml pull
 docker-compose -f docker-compose.local.yml up -d
 ```
 
+#### Rebuild & Restart (for local development)
+
+The Compose files in `deploy/` use the published image (`weishaw/sub2api:latest`) by default.  
+If you are modifying the code (frontend or backend) and want to rebuild the Docker image locally
+(frontend build is included and embedded into the backend), you can use the extra Compose override
+file `deploy/docker-compose.codex.yml`:
+
+```yaml
+# deploy/docker-compose.codex.yml
+services:
+  sub2api:
+    image: sub2api-local:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile
+```
+
+```bash
+cd deploy
+
+# Rebuild image from local source (includes frontend build)
+docker compose -f docker-compose.local.yml -f docker-compose.codex.yml build sub2api
+
+# Recreate container to apply the new image
+docker compose -f docker-compose.local.yml -f docker-compose.codex.yml up -d --force-recreate sub2api
+
+# Health check
+curl -fsS "http://127.0.0.1:${SERVER_PORT:-8080}/health"
+```
+
 #### Easy Migration (Local Directory Version)
 
 When using `docker-compose.local.yml`, migrate to a new server easily:

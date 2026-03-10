@@ -24,6 +24,7 @@ type stubAdminService struct {
 	updatedProxyIDs      []int64
 	updatedProxies       []*service.UpdateProxyInput
 	testedProxyIDs       []int64
+	clearedAccountErrors []int64
 	createAccountErr     error
 	updateAccountErr     error
 	bulkUpdateAccountErr error
@@ -186,7 +187,7 @@ func (s *stubAdminService) GetGroupAPIKeys(ctx context.Context, groupID int64, p
 	return s.apiKeys, int64(len(s.apiKeys)), nil
 }
 
-func (s *stubAdminService) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64) ([]service.Account, int64, error) {
+func (s *stubAdminService) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, sortBy, sortOrder string) ([]service.Account, int64, error) {
 	return s.accounts, int64(len(s.accounts)), nil
 }
 
@@ -281,6 +282,9 @@ func (s *stubAdminService) RefreshAccountCredentials(ctx context.Context, id int
 }
 
 func (s *stubAdminService) ClearAccountError(ctx context.Context, id int64) (*service.Account, error) {
+	s.mu.Lock()
+	s.clearedAccountErrors = append(s.clearedAccountErrors, id)
+	s.mu.Unlock()
 	account := service.Account{ID: id, Name: "account", Status: service.StatusActive}
 	return &account, nil
 }

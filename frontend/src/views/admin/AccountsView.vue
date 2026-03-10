@@ -134,12 +134,14 @@
         <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @edit="showBulkEdit = true" @clear="selIds = []" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
         <DataTable
           :columns="cols"
-          :data="accounts"
+          :data="tableAccounts"
           :loading="loading"
           row-key="id"
           default-sort-key="name"
           default-sort-order="asc"
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
+          :server-side-sort="true"
+          @sort="handleSort"
         >
           <template #header-select>
             <input
@@ -310,6 +312,7 @@ import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
+import { resolveCodexUsageWindow } from '@/utils/codexUsage'
 import type { Account, AccountPlatform, AccountType, Proxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
 
 const { t } = useI18n()
@@ -370,6 +373,35 @@ const HIDDEN_COLUMNS_KEY = 'account-hidden-columns'
 
 // Sorting settings
 const ACCOUNT_SORT_STORAGE_KEY = 'account-table-sort'
+const ACCOUNT_SORTABLE_KEYS = ['name', 'status', 'schedulable', 'usage', 'priority', 'rate_multiplier', 'last_used_at', 'expires_at'] as const
+type AccountSortKey = (typeof ACCOUNT_SORTABLE_KEYS)[number]
+
+const normalizeAccountSortKey = (value: unknown): AccountSortKey => {
+  if (typeof value !== 'string') return 'name'
+  const normalized = value.trim()
+  if (!ACCOUNT_SORTABLE_KEYS.includes(normalized as AccountSortKey)) return 'name'
+  if (normalized !== 'name' && hiddenColumns.has(normalized)) return 'name'
+  return normalized as AccountSortKey
+}
+
+const normalizeAccountSortOrder = (value: unknown): 'asc' | 'desc' => value === 'desc' ? 'desc' : 'asc'
+
+const resolveInitialAccountSortState = () => {
+  const fallback = { sort_by: 'name' as AccountSortKey, sort_order: 'asc' as 'asc' | 'desc' }
+  if (typeof window === 'undefined') return fallback
+  try {
+    const raw = window.localStorage.getItem(ACCOUNT_SORT_STORAGE_KEY)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw) as { key?: string; order?: 'asc' | 'desc' }
+    return {
+      sort_by: normalizeAccountSortKey(parsed.key),
+      sort_order: normalizeAccountSortOrder(parsed.order)
+    }
+  } catch (error) {
+    console.error('Failed to load account sort settings:', error)
+    return fallback
+  }
+}
 
 // Auto refresh settings
 const showAutoRefreshDropdown = ref(false)
@@ -397,6 +429,122 @@ const buildDefaultTodayStats = (): WindowStats => ({
   standard_cost: 0,
   user_cost: 0
 })
+
+const USAGE_SORT_CATEGORY_SPAN = 1_000_000
+
+const clampPercent = (value: number) => Math.min(100, Math.max(0, value))
+
+const toFiniteNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+const toUnixMs = (value: string | null | undefined): number | null => {
+  if (!value) return null
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const remainingSecondsFrom = (value: string | null | undefined) => {
+  const targetMs = toUnixMs(value)
+  if (targetMs === null) return 0
+  return Math.max(0, Math.floor((targetMs - Date.now()) / 1000))
+}
+
+const hasFutureTime = (value: string | null | undefined) => {
+  const targetMs = toUnixMs(value)
+  return targetMs !== null && targetMs > Date.now()
+}
+
+const isExpiredForScheduling = (account: Account) => {
+  if (!account.auto_pause_on_expired || !account.expires_at) return false
+  return account.expires_at * 1000 <= Date.now()
+}
+
+const resolveSessionWindowUsedPercent = (account: Account): number | null => {
+  const utilization = toFiniteNumber(account.extra?.session_window_utilization)
+  if (utilization !== null) {
+    const normalized = utilization <= 1 ? utilization * 100 : utilization
+    return clampPercent(normalized)
+  }
+
+  switch (account.session_window_status) {
+    case 'rejected':
+      return 100
+    case 'allowed_warning':
+      return 85
+    case 'allowed':
+      return 0
+    default:
+      return null
+  }
+}
+
+const resolveOpenAIUsedPercent = (account: Account): number | null => {
+  if (account.platform !== 'openai' || account.type !== 'oauth') return null
+
+  const windows = [
+    resolveCodexUsageWindow(account.extra, '5h'),
+    resolveCodexUsageWindow(account.extra, '7d')
+  ]
+  const usageValues = windows
+    .map(window => window.usedPercent)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+
+  if (usageValues.length === 0) return null
+  return clampPercent(Math.max(...usageValues))
+}
+
+const buildUsageSortValue = (category: number, detail: number = 0) => category * USAGE_SORT_CATEGORY_SPAN + detail
+
+const getAccountUsageSortValue = (account: Account): number | null => {
+  if (account.status === 'error') return buildUsageSortValue(6)
+  if (account.status !== 'active' || !account.schedulable || isExpiredForScheduling(account)) {
+    return buildUsageSortValue(5)
+  }
+
+  if (hasFutureTime(account.temp_unschedulable_until)) {
+    return buildUsageSortValue(4, remainingSecondsFrom(account.temp_unschedulable_until))
+  }
+  if (hasFutureTime(account.overload_until)) {
+    return buildUsageSortValue(4, 100_000 + remainingSecondsFrom(account.overload_until))
+  }
+  if (hasFutureTime(account.rate_limit_reset_at)) {
+    return buildUsageSortValue(4, 200_000 + remainingSecondsFrom(account.rate_limit_reset_at))
+  }
+
+  if (account.session_window_status === 'rejected' && hasFutureTime(account.session_window_end)) {
+    return buildUsageSortValue(4, 300_000 + remainingSecondsFrom(account.session_window_end))
+  }
+
+  const sessionUsedPercent = resolveSessionWindowUsedPercent(account)
+  if (sessionUsedPercent !== null) {
+    if (account.session_window_status === 'allowed_warning') {
+      return buildUsageSortValue(2, Math.round(sessionUsedPercent * 1000))
+    }
+    return buildUsageSortValue(0, Math.round(sessionUsedPercent * 1000))
+  }
+
+  const openAIUsedPercent = resolveOpenAIUsedPercent(account)
+  if (openAIUsedPercent !== null) {
+    return buildUsageSortValue(1, Math.round(openAIUsedPercent * 1000))
+  }
+
+  return buildUsageSortValue(3)
+}
+
+type AccountTableRow = Account & { usage: number | null }
+
+const tableAccounts = computed<AccountTableRow[]>(() =>
+  accounts.value.map(account => ({
+    ...account,
+    usage: getAccountUsageSortValue(account)
+  }))
+)
 
 const refreshTodayStatsBatch = async () => {
   if (hiddenColumns.has('today_stats')) {
@@ -503,6 +651,8 @@ if (typeof window !== 'undefined') {
   loadSavedAutoRefresh()
 }
 
+const initialAccountSortState = resolveInitialAccountSortState()
+
 const setAutoRefreshEnabled = (enabled: boolean) => {
   autoRefreshEnabled.value = enabled
   saveAutoRefreshToStorage()
@@ -531,6 +681,11 @@ const toggleColumn = (key: string) => {
     hiddenColumns.add(key)
   }
   saveColumnsToStorage()
+  if (!wasHidden && params.sort_by === key) {
+    params.sort_by = 'name'
+    params.sort_order = 'asc'
+    reload()
+  }
   if (key === 'today_stats' && wasHidden) {
     refreshTodayStatsBatch().catch((error) => {
       console.error('Failed to load account today stats after showing column:', error)
@@ -552,7 +707,15 @@ const {
   handlePageSizeChange: baseHandlePageSizeChange
 } = useTableLoader<Account, any>({
   fetchFn: adminAPI.accounts.list,
-  initialParams: { platform: '', type: '', status: '', group: '', search: '' }
+  initialParams: {
+    platform: '',
+    type: '',
+    status: '',
+    group: '',
+    search: '',
+    sort_by: initialAccountSortState.sort_by,
+    sort_order: initialAccountSortState.sort_order
+  }
 })
 
 const resetAutoRefreshCache = () => {
@@ -566,7 +729,8 @@ const load = async () => {
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = false
   if (isFirstLoad.value) {
-    ;(params as any).lite = '1'
+    const loadParams = params as typeof params & { lite?: string }
+    loadParams.lite = '1'
   }
   await baseLoad()
   if (isFirstLoad.value) {
@@ -704,8 +868,11 @@ const refreshAccountsIncrementally = async () => {
         platform?: string
         type?: string
         status?: string
+        group?: string
         search?: string
-
+        lite?: string
+        sort_by?: string
+        sort_order?: 'asc' | 'desc'
       },
       { etag: autoRefreshETag.value }
     )
@@ -730,6 +897,12 @@ const refreshAccountsIncrementally = async () => {
 
 const handleManualRefresh = async () => {
   await load()
+}
+
+const handleSort = (key: string, order: 'asc' | 'desc') => {
+  params.sort_by = normalizeAccountSortKey(key)
+  params.sort_order = normalizeAccountSortOrder(order)
+  reload()
 }
 
 const syncPendingListChanges = async () => {
@@ -779,7 +952,7 @@ const allColumns = computed(() => {
     c.push({ key: 'groups', label: t('admin.accounts.columns.groups'), sortable: false })
   }
   c.push(
-    { key: 'usage', label: t('admin.accounts.columns.usageWindows'), sortable: false },
+    { key: 'usage', label: t('admin.accounts.columns.usageWindows'), sortable: true },
     { key: 'proxy', label: t('admin.accounts.columns.proxy'), sortable: false },
     { key: 'priority', label: t('admin.accounts.columns.priority'), sortable: true },
     { key: 'rate_multiplier', label: t('admin.accounts.columns.billingRateMultiplier'), sortable: true },

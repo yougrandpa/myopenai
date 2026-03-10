@@ -359,6 +359,12 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			}
 			result.AccountUpdated++
 			updatedSnapshot := applyImportedDuplicateAccountUpdate(existing, item, proxyID, resolvedGroupIDs)
+			if shouldClearImportedDuplicateError(existing, item) {
+				if _, err := h.adminService.ClearAccountError(ctx, duplicateID); err == nil {
+					updatedSnapshot.Status = service.StatusActive
+					updatedSnapshot.ErrorMessage = ""
+				}
+			}
 			accountByID[duplicateID] = updatedSnapshot
 			addAccountIdentityKeys(accountIdentityIndex, updatedSnapshot)
 			continue
@@ -438,7 +444,7 @@ func (h *AccountHandler) listAccountsFiltered(ctx context.Context, platform, acc
 	pageSize := dataPageCap
 	var out []service.Account
 	for {
-		items, total, err := h.adminService.ListAccounts(ctx, page, pageSize, platform, accountType, status, search, 0)
+		items, total, err := h.adminService.ListAccounts(ctx, page, pageSize, platform, accountType, status, search, 0, "", "")
 		if err != nil {
 			return nil, err
 		}
@@ -548,6 +554,13 @@ func buildDefaultOpenAIModelMapping() map[string]any {
 		mapping[trimmed] = trimmed
 	}
 	return mapping
+}
+
+func shouldClearImportedDuplicateError(existing service.Account, item DataAccount) bool {
+	if existing.Status != service.StatusError {
+		return false
+	}
+	return len(item.Credentials) > 0
 }
 
 func buildImportedAccountSnapshot(id int64, item DataAccount, proxyID *int64, groupIDs []int64) service.Account {

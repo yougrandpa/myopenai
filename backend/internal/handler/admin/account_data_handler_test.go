@@ -331,6 +331,51 @@ func TestImportDataUpdatesDuplicateAccountByIdentity(t *testing.T) {
 	require.Equal(t, 0, resp.Data.AccountFailed)
 }
 
+func TestImportDataClearsDuplicateErrorAfterCredentialRefresh(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+
+	adminSvc.accounts = []service.Account{
+		{
+			ID:           42,
+			Name:         "existing-openai",
+			Platform:     service.PlatformOpenAI,
+			Type:         service.AccountTypeOAuth,
+			Credentials:  map[string]any{"access_token": "old-at", "chatgpt_account_id": "acc-123"},
+			Status:       service.StatusError,
+			ErrorMessage: "Access forbidden (403): account may be suspended or lack permissions",
+		},
+	}
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":        "import@example.com",
+					"platform":    service.PlatformOpenAI,
+					"type":        service.AccountTypeOAuth,
+					"credentials": map[string]any{"access_token": "new-at", "refresh_token": "new-rt", "chatgpt_account_id": "acc-123"},
+					"concurrency": 10,
+					"priority":    1,
+				},
+			},
+		},
+		"skip_default_group_bind": true,
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.updatedAccounts, 1)
+	require.Equal(t, []int64{42}, adminSvc.clearedAccountErrors)
+}
+
 func TestImportDataUsesPlatformDefaultGroupWhenNoGroupSelected(t *testing.T) {
 	router, adminSvc := setupAccountDataRouter()
 	adminSvc.groups = []service.Group{{

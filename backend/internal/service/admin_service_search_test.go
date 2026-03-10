@@ -4,7 +4,9 @@ package service
 
 import (
 	"context"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
@@ -45,7 +47,22 @@ func (s *accountRepoStubForAdminList) ListWithFilters(_ context.Context, params 
 		}
 	}
 
-	return s.listWithFiltersAccounts, result, nil
+	start := 0
+	if params.Page > 1 && params.PageSize > 0 {
+		start = (params.Page - 1) * params.PageSize
+	}
+	if start >= len(s.listWithFiltersAccounts) {
+		return []Account{}, result, nil
+	}
+	end := len(s.listWithFiltersAccounts)
+	if params.PageSize > 0 {
+		limitEnd := start + params.PageSize
+		if limitEnd < end {
+			end = limitEnd
+		}
+	}
+
+	return append([]Account(nil), s.listWithFiltersAccounts[start:end]...), result, nil
 }
 
 type proxyRepoStubForAdminList struct {
@@ -168,7 +185,7 @@ func TestAdminService_ListAccounts_WithSearch(t *testing.T) {
 		}
 		svc := &adminServiceImpl{accountRepo: repo}
 
-		accounts, total, err := svc.ListAccounts(context.Background(), 1, 20, PlatformGemini, AccountTypeOAuth, StatusActive, "acc", 0)
+		accounts, total, err := svc.ListAccounts(context.Background(), 1, 20, PlatformGemini, AccountTypeOAuth, StatusActive, "acc", 0, "", "")
 		require.NoError(t, err)
 		require.Equal(t, int64(10), total)
 		require.Equal(t, []Account{{ID: 1, Name: "acc"}}, accounts)
@@ -180,6 +197,55 @@ func TestAdminService_ListAccounts_WithSearch(t *testing.T) {
 		require.Equal(t, StatusActive, repo.listWithFiltersStatus)
 		require.Equal(t, "acc", repo.listWithFiltersSearch)
 	})
+}
+
+func TestAdminService_ListAccounts_SortUsageAcrossPages(t *testing.T) {
+	repo := &accountRepoStubForAdminList{
+		listWithFiltersAccounts: []Account{
+			{ID: 4, Name: "error", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusError},
+			{ID: 3, Name: "warn", Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, SessionWindowStatus: "allowed_warning"},
+			{ID: 2, Name: "openai", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Extra: map[string]any{"codex_5h_used_percent": 50.0, "codex_5h_reset_at": time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)}},
+			{ID: 1, Name: "fresh", Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, SessionWindowStatus: "allowed"},
+		},
+		listWithFiltersResult: &pagination.PaginationResult{Total: 4},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	accounts, total, err := svc.ListAccounts(context.Background(), 2, 2, "", "", "", "", 0, "usage", "asc")
+	require.NoError(t, err)
+	require.Equal(t, int64(4), total)
+	require.Len(t, accounts, 2)
+	require.Equal(t, int64(3), accounts[0].ID)
+	require.Equal(t, int64(4), accounts[1].ID)
+	require.Equal(t, 1, repo.listWithFiltersCalls)
+	require.Equal(t, pagination.PaginationParams{Page: 1, PageSize: 100}, repo.listWithFiltersParams)
+}
+
+func TestAdminService_ListAccounts_SortAcrossRepositoryPages(t *testing.T) {
+	allAccounts := make([]Account, 0, 150)
+	for i := 0; i < 150; i++ {
+		allAccounts = append(allAccounts, Account{
+			ID:       int64(150 - i),
+			Name:     "acc-" + strconv.Itoa(150-i),
+			Priority: 150 - i,
+			Status:   StatusActive,
+		})
+	}
+
+	repo := &accountRepoStubForAdminList{
+		listWithFiltersAccounts: allAccounts,
+		listWithFiltersResult:   &pagination.PaginationResult{Total: int64(len(allAccounts))},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	accounts, total, err := svc.ListAccounts(context.Background(), 3, 20, "", "", "", "", 0, "priority", "asc")
+	require.NoError(t, err)
+	require.Equal(t, int64(150), total)
+	require.Len(t, accounts, 20)
+	require.Equal(t, int64(41), accounts[0].ID)
+	require.Equal(t, int64(60), accounts[len(accounts)-1].ID)
+	require.Equal(t, 2, repo.listWithFiltersCalls)
+	require.Equal(t, pagination.PaginationParams{Page: 2, PageSize: 100}, repo.listWithFiltersParams)
 }
 
 func TestAdminService_ListProxies_WithSearch(t *testing.T) {

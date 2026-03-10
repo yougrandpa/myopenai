@@ -63,7 +63,7 @@
           type="file"
           class="hidden"
           multiple
-          accept="application/json,.json"
+          accept="application/json,application/gzip,application/x-gzip,.json,.json.gz,.gz"
           @change="handleFileChange"
         />
         <input
@@ -74,7 +74,7 @@
           multiple
           webkitdirectory
           directory
-          accept="application/json,.json"
+          accept="application/json,application/gzip,application/x-gzip,.json,.json.gz,.gz"
           @change="handleDirectoryChange"
         />
       </div>
@@ -182,6 +182,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { gunzipSync, strFromU8 } from 'fflate'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
@@ -302,7 +303,53 @@ const handleClose = () => {
   emit('close')
 }
 
+const isGzipJSONFile = (sourceFile: File) => {
+  const name = sourceFile.name.toLowerCase()
+  return name.endsWith('.json.gz') || name.endsWith('.gz') || sourceFile.type === 'application/gzip' || sourceFile.type === 'application/x-gzip'
+}
+
+const readFileAsArrayBuffer = async (sourceFile: File): Promise<ArrayBuffer> => {
+  if (typeof sourceFile.arrayBuffer === 'function') {
+    return sourceFile.arrayBuffer()
+  }
+
+  return await new Promise<ArrayBuffer>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) {
+        resolve(reader.result)
+        return
+      }
+      reject(new Error('Failed to read file'))
+    }
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'))
+    reader.readAsArrayBuffer(sourceFile)
+  })
+}
+
+const decompressGzipText = async (buffer: ArrayBuffer): Promise<string> => {
+  if (typeof DecompressionStream !== 'undefined') {
+    try {
+      const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'))
+      return await new Response(stream).text()
+    } catch (_error) {
+      return strFromU8(gunzipSync(new Uint8Array(buffer)))
+    }
+  }
+
+  try {
+    return strFromU8(gunzipSync(new Uint8Array(buffer)))
+  } catch {
+    throw new Error('GZIP_DECOMPRESSION_UNSUPPORTED')
+  }
+}
+
 const readFileAsText = async (sourceFile: File): Promise<string> => {
+  if (isGzipJSONFile(sourceFile)) {
+    const buffer = await readFileAsArrayBuffer(sourceFile)
+    return decompressGzipText(buffer)
+  }
+
   if (typeof sourceFile.text === 'function') {
     return sourceFile.text()
   }
@@ -322,7 +369,7 @@ const readFileAsText = async (sourceFile: File): Promise<string> => {
 
 const isImportableJSONFile = (sourceFile: File) => {
   const name = sourceFile.name.toLowerCase()
-  return name.endsWith('.json') || sourceFile.type === 'application/json' || sourceFile.type === ''
+  return name.endsWith('.json') || name.endsWith('.json.gz') || name.endsWith('.gz') || sourceFile.type === 'application/json' || sourceFile.type === 'application/gzip' || sourceFile.type === 'application/x-gzip'
 }
 
 const fileSortKey = (sourceFile: File) => {
@@ -364,7 +411,9 @@ const selectFiles = async (files: File[]) => {
         const reason =
           error instanceof SyntaxError
             ? t('admin.accounts.dataImportParseFailed')
-            : t('admin.accounts.dataImportUnsupportedFormat')
+            : error instanceof Error && error.message === 'GZIP_DECOMPRESSION_UNSUPPORTED'
+              ? t('admin.accounts.dataImportGzipUnsupported')
+              : t('admin.accounts.dataImportUnsupportedFormat')
         if (!firstFailureReason) {
           firstFailureReason = reason
         }

@@ -37,6 +37,8 @@ export async function list(
     group?: string
     search?: string
     lite?: string
+    sort_by?: string
+    sort_order?: 'asc' | 'desc'
   },
   options?: {
     signal?: AbortSignal
@@ -66,8 +68,11 @@ export async function listWithEtag(
     platform?: string
     type?: string
     status?: string
+    group?: string
     search?: string
     lite?: string
+    sort_by?: string
+    sort_order?: 'asc' | 'desc'
   },
   options?: {
     signal?: AbortSignal

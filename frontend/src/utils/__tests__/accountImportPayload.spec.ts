@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   mergeNormalizedAdminAccountImports,
   normalizeAdminAccountImportPayload
@@ -60,6 +60,27 @@ describe('normalizeAdminAccountImportPayload', () => {
       }
     })
     expect(result.payload.accounts[0].credentials.expires_at).toBe(1773794510)
+  })
+
+
+  it('derives expires_at from expires_in when absolute expiry is missing', () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 2, 9, 0, 0, 0))
+    try {
+      const raw = JSON.stringify({
+        access_token: 'at-2',
+        refresh_token: 'rt-2',
+        email: 'expires-in@example.com',
+        expires_in: 3600
+      })
+
+      const result = normalizeAdminAccountImportPayload(raw)
+
+      expect(result.format).toBe('openai-oauth')
+      expect(result.payload.accounts[0].credentials.expires_in).toBe(3600)
+      expect(result.payload.accounts[0].credentials.expires_at).toBe(1773018000)
+    } finally {
+      nowSpy.mockRestore()
+    }
   })
 
   it('converts arrays of OpenAI bundles and keeps names unique', () => {

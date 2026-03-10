@@ -48,7 +48,7 @@ type AdminService interface {
 	AdminUpdateAPIKeyGroupID(ctx context.Context, keyID int64, groupID *int64) (*AdminUpdateAPIKeyGroupIDResult, error)
 
 	// Account management
-	ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64) ([]Account, int64, error)
+	ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, sortBy, sortOrder string) ([]Account, int64, error)
 	GetAccount(ctx context.Context, id int64) (*Account, error)
 	GetAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error)
 	CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error)
@@ -1343,13 +1343,23 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 }
 
 // Account management implementations
-func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64) ([]Account, int64, error) {
-	params := pagination.PaginationParams{Page: page, PageSize: pageSize}
-	accounts, result, err := s.accountRepo.ListWithFilters(ctx, params, platform, accountType, status, search, groupID)
+func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, sortBy, sortOrder string) ([]Account, int64, error) {
+	normalizedSortBy := normalizeAdminAccountSortKey(sortBy)
+	if normalizedSortBy == "" {
+		params := pagination.PaginationParams{Page: page, PageSize: pageSize}
+		accounts, result, err := s.accountRepo.ListWithFilters(ctx, params, platform, accountType, status, search, groupID)
+		if err != nil {
+			return nil, 0, err
+		}
+		return accounts, result.Total, nil
+	}
+
+	allAccounts, err := s.listAllAccountsForSort(ctx, platform, accountType, status, search, groupID)
 	if err != nil {
 		return nil, 0, err
 	}
-	return accounts, result.Total, nil
+	sortAdminAccounts(allAccounts, normalizedSortBy, sortOrder)
+	return paginateSortedAccounts(allAccounts, page, pageSize), int64(len(allAccounts)), nil
 }
 
 func (s *adminServiceImpl) GetAccount(ctx context.Context, id int64) (*Account, error) {
