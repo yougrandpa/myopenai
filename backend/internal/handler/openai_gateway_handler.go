@@ -154,6 +154,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	reqStream := streamResult.Bool()
+	if isOpenAIResponsesInputEmpty(body) {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request input is empty, please check")
+		return
+	}
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
 	if previousResponseID != "" {
@@ -1494,6 +1498,29 @@ func shouldLogOpenAIForwardFailureAsWarn(c *gin.Context, wroteFallback bool) boo
 		return false
 	}
 	return c.Writer.Written()
+}
+
+func isOpenAIResponsesInputEmpty(body []byte) bool {
+	input := gjson.GetBytes(body, "input")
+	if input.Exists() {
+		switch input.Type {
+		case gjson.Null:
+			return true
+		case gjson.String:
+			return strings.TrimSpace(input.String()) == ""
+		case gjson.JSON:
+			return len(input.Array()) == 0
+		default:
+			return false
+		}
+	}
+
+	// If input is missing, fall back to messages only when explicitly provided.
+	messages := gjson.GetBytes(body, "messages")
+	if messages.Exists() && messages.IsArray() {
+		return len(messages.Array()) == 0
+	}
+	return false
 }
 
 // errorResponse returns OpenAI API format error response

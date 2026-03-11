@@ -154,6 +154,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
+	if !hasNonEmptyMessageContent(parsedReq.Messages) {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request content is empty, please check")
+		return
+	}
 	reqModel := parsedReq.Model
 	reqStream := parsedReq.Stream
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
@@ -1288,6 +1292,36 @@ func (h *GatewayHandler) errorResponse(c *gin.Context, status int, errType, mess
 	})
 }
 
+func hasNonEmptyMessageContent(messages []any) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	for _, msg := range messages {
+		record, ok := msg.(map[string]any)
+		if !ok {
+			// Unknown shape; avoid false negatives.
+			return true
+		}
+		content, ok := record["content"]
+		if !ok || content == nil {
+			continue
+		}
+		switch typed := content.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				return true
+			}
+		case []any:
+			if len(typed) > 0 {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // CountTokens handles token counting endpoint
 // POST /v1/messages/count_tokens
 // 特点：校验订阅/余额，但不计算并发、不记录使用量
@@ -1333,6 +1367,10 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	parsedReq, err := service.ParseGatewayRequest(body, domain.PlatformAnthropic)
 	if err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return
+	}
+	if !hasNonEmptyMessageContent(parsedReq.Messages) {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request content is empty, please check")
 		return
 	}
 	// count_tokens 走 messages 严格校验时，复用已解析请求，避免二次反序列化。
